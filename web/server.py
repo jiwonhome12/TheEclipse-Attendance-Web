@@ -1,0 +1,125 @@
+"""
+웹 버전 출석체크 서버. 키오스크 PC(또는 라즈베리파이)에서 띄우고 브라우저로 http://127.0.0.1:8000 을 연다.
+
+    python web/server.py                 # 이 PC에서만 접속
+    python web/server.py --host 0.0.0.0  # 같은 와이파이의 다른 기기에서도 접속 (관리자 로그인이 생긴 뒤에 쓴다)
+
+카메라와 얼굴 인식은 서버(이 PC)에서 돌고, 브라우저는 /ws로 상태를 받아 화면만 그린다.
+"""
+import argparse
+import asyncio
+import multiprocessing
+import os
+import sys
+from contextlib import asynccontextmanager
+
+# 프로젝트 폴더의 core.py를 불러오기 위해 (python web/server.py 로 실행해도 되게)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import core  # noqa: E402
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect  # noqa: E402
+from fastapi.responses import FileResponse, StreamingResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
+
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+VIDEO_FPS = 10 if core.LOW_POWER else 20  # 브라우저로 보내는 영상의 초당 장수
+
+engine = None  # 서버가 뜰 때 만든다 (얼굴 인식 프로세스가 이 파일을 다시 불러와도 엔진은 하나만 생기게)
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    global engine
+    from engine import AttendanceEngine
+    engine = AttendanceEngine()
+    yield
+    engine.close()
+
+
+app = FastAPI(title="창의공간 출석체크", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/assets", StaticFiles(directory=os.path.join(core.RESOURCE_DIR, "assets")), name="assets")
+
+
+@app.get("/")
+def index():
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
+@app.get("/api/state")
+def get_state():
+    return engine.state()
+
+
+class SessionRequest(BaseModel):
+    mode: str                  # "attendance" / "lookup" / "test"
+    action: str | None = None  # attendance일 때 "CHECK_IN" / "CHECK_OUT"
+
+
+@app.post("/api/session")
+def start_session(req: SessionRequest):
+    try:
+        engine.start_session(req.mode, req.action)
+    except ValueError:
+        raise HTTPException(400, "mode는 attendance/lookup/test, action은 CHECK_IN/CHECK_OUT 이어야 합니다.")
+    return engine.state()
+
+
+@app.post("/api/idle")
+def go_idle():
+    engine.go_idle()
+    return engine.state()
+
+
+@app.websocket("/ws")
+async def ws_state(ws: WebSocket):
+    """상태가 바뀔 때마다 보낸다 (0.1초마다 확인)."""
+    await ws.accept()
+    sent = -1
+    try:
+        while True:
+            st = engine.state()
+            if st["version"] != sent:
+                sent = st["version"]
+                await ws.send_json(st)
+            await asyncio.sleep(0.1)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+
+
+@app.get("/video.mjpg")
+async def video():
+    """카메라 화면(얼굴 상자·이름 포함)을 MJPEG로 보낸다. <img src="/video.mjpg">로 바로 볼 수 있다."""
+    async def frames():
+        last_seq = -1
+        while True:
+            seq = engine.frame_seq
+            jpg = engine.jpeg_frame() if seq != last_seq else None
+            if jpg:
+                last_seq = seq
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
+            await asyncio.sleep(1 / VIDEO_FPS)
+
+    return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="창의공간 출석체크 웹 서버")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    args = parser.parse_args()
+
+    # 카메라는 한 프로그램만 쓸 수 있으므로 tkinter 앱이나 다른 서버가 켜져 있으면 띄우지 않는다
+    if not core.acquire_single_instance():
+        print("[출석] 출석체크 프로그램이 이미 실행 중입니다.")
+        sys.exit(1)
+
+    import uvicorn
+    print(f"[출석] 브라우저에서 http://{'127.0.0.1' if args.host == '0.0.0.0' else args.host}:{args.port} 을 여세요.")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+
+
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    main()

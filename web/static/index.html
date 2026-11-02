@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>창의공간 출석체크</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <button class="brand" data-action="home">
+      <span class="logo">E</span>
+      <span>
+        <strong>창의공간 출석체크</strong>
+        <small>소프트웨어전공 얼굴인식 출퇴근</small>
+      </span>
+    </button>
+    <div class="top-right">
+      <span id="clock" class="clock"></span>
+      <button class="ghost" data-action="test">카메라 테스트</button>
+      <button class="ghost" data-action="lookup">출석 조회</button>
+    </div>
+  </header>
+
+  <p id="ai-status" class="ai-status" hidden></p>
+
+  <main>
+    <!-- 메인 화면: 출근 / 퇴근 -->
+    <section id="view-idle" class="view">
+      <h1 class="greeting">출근 또는 퇴근을 눌러 주세요</h1>
+      <div class="action-cards">
+        <button class="action-card in" data-action="CHECK_IN">
+          <span class="action-icon">→</span>
+          <span class="action-title">출근</span>
+          <span class="action-sub">얼굴을 확인하고 출근을 기록합니다</span>
+        </button>
+        <button class="action-card out" data-action="CHECK_OUT">
+          <span class="action-icon">←</span>
+          <span class="action-title">퇴근</span>
+          <span class="action-sub">얼굴을 확인하고 퇴근을 기록합니다</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- 출근·퇴근·출석 조회: 얼굴 확인 중 -->
+    <section id="view-verify" class="view card verify" hidden>
+      <p id="verify-kind" class="pill"></p>
+      <div id="verify-visual" class="visual"></div>
+      <h2 id="verify-title"></h2>
+      <p id="verify-detail" class="detail"></p>
+      <div class="card-foot">
+        <span id="verify-remaining" class="remaining"></span>
+        <button class="ghost" data-action="home">취소</button>
+      </div>
+    </section>
+
+    <!-- 출근/퇴근 결과 -->
+    <section id="view-result" class="view card result" hidden>
+      <div id="result-visual" class="visual"></div>
+      <h2 id="result-title"></h2>
+      <p id="result-detail" class="detail"></p>
+      <p id="result-today" class="today"></p>
+      <div class="card-foot">
+        <span id="result-remaining" class="remaining"></span>
+        <button class="primary" data-action="home">처음으로</button>
+      </div>
+    </section>
+
+    <!-- 출석 조회 결과 -->
+    <section id="view-stats" class="view card stats" hidden>
+      <h2 id="stats-title"></h2>
+      <div class="stat-row">
+        <div class="stat">
+          <small>이번 주 출석 시간</small>
+          <strong id="stats-time"></strong>
+          <div class="bar"><span id="stats-time-bar"></span></div>
+          <small id="stats-time-need" class="muted"></small>
+        </div>
+        <div class="stat">
+          <small>이번 주 출석 일수</small>
+          <strong id="stats-days"></strong>
+          <div class="bar"><span id="stats-days-bar"></span></div>
+          <small id="stats-days-need" class="muted"></small>
+        </div>
+      </div>
+      <p id="stats-today" class="today"></p>
+      <table class="sessions">
+        <thead><tr><th>날짜</th><th>출근</th><th>퇴근</th></tr></thead>
+        <tbody id="stats-sessions"></tbody>
+      </table>
+      <div class="card-foot">
+        <span id="stats-remaining" class="remaining"></span>
+        <button class="primary" data-action="home">처음으로</button>
+      </div>
+    </section>
+
+    <!-- 카메라 테스트: 영상 + 인식 결과 -->
+    <section id="view-test" class="view test" hidden>
+      <div class="video-box">
+        <img id="video" alt="카메라 화면">
+        <p id="video-msg" class="video-msg"></p>
+      </div>
+      <div class="card test-panel">
+        <p class="pill">카메라 테스트</p>
+        <h2 id="test-title"></h2>
+        <p id="test-detail" class="detail"></p>
+        <p class="muted">기록은 남지 않습니다.</p>
+        <div class="card-foot">
+          <span id="test-remaining" class="remaining"></span>
+          <button class="ghost" data-action="home">끝내기</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
