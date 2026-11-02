@@ -320,117 +320,215 @@ main {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ---------- 고개 돌리기 안내 (turn-guide.js) ---------- */
-.turn-guide { margin: 16px auto 0; max-width: 620px; }
+.turn-guide {
+  --ease: cubic-bezier(0.45, 0, 0.2, 1);   /* 천천히 출발해서 부드럽게 멈춘다 */
+  --cycle: 2.8s;
+  margin: 16px auto 0;
+  max-width: 640px;
+}
 .turn-guide svg { fill: none; stroke-linecap: round; stroke-linejoin: round; }
 
-.tg-body { display: flex; align-items: center; justify-content: center; gap: 40px; flex-wrap: wrap; }
+.tg-body { display: flex; align-items: center; justify-content: center; gap: 44px; flex-wrap: wrap; }
 
 /* 얼굴 그림을 가운데 두고 위·아래·왼쪽·오른쪽에 화살표 */
 .tg-stage {
   display: grid;
-  grid-template-columns: 56px auto 56px;
+  grid-template-columns: 60px auto 60px;
   grid-template-areas: ". up ." "left head right" ". down .";
   place-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 .tg-arrow.up { grid-area: up; }
 .tg-arrow.left { grid-area: left; }
 .tg-arrow.right { grid-area: right; }
 .tg-arrow.down { grid-area: down; }
-.tg-head { grid-area: head; width: 130px; height: 140px; }
-.tg-skull { fill: var(--blue-soft); stroke: var(--blue); stroke-width: 3; }
-.tg-ear { fill: var(--blue-soft); stroke: var(--blue); stroke-width: 3; }
-.tg-face { stroke: var(--blue-dark); stroke-width: 3.5; }
-.tg-eye { fill: var(--blue-dark); stroke: none; }
 
-/* 얼굴(눈·코·입)을 그쪽으로 밀어서 고개를 돌리는 모습을 보여준다 */
-.turn-guide[data-dir="left"] .tg-face { animation: tg-face-left 1.8s ease-in-out infinite; }
-.turn-guide[data-dir="right"] .tg-face { animation: tg-face-right 1.8s ease-in-out infinite; }
-.turn-guide[data-dir="up"] .tg-face { animation: tg-face-up 1.8s ease-in-out infinite; }
-.turn-guide[data-dir="down"] .tg-face { animation: tg-face-down 1.8s ease-in-out infinite; }
-.turn-guide[data-dir="left"] .tg-ear.l, .turn-guide[data-dir="right"] .tg-ear.r { animation: tg-ear-hide 1.8s ease-in-out infinite; }
-.turn-guide[data-dir="up"] .tg-ear { animation: tg-ear-down 1.8s ease-in-out infinite; }
-.turn-guide[data-dir="down"] .tg-ear { animation: tg-ear-up 1.8s ease-in-out infinite; }
-@keyframes tg-face-left { 0%, 12%, 100% { transform: none; } 45%, 75% { transform: translateX(-17px); } }
-@keyframes tg-face-right { 0%, 12%, 100% { transform: none; } 45%, 75% { transform: translateX(17px); } }
-@keyframes tg-face-up { 0%, 12%, 100% { transform: none; } 45%, 75% { transform: translateY(-14px) scaleY(0.92); } }
-@keyframes tg-face-down { 0%, 12%, 100% { transform: none; } 45%, 75% { transform: translateY(14px) scaleY(0.92); } }
-@keyframes tg-ear-hide { 0%, 12%, 100% { opacity: 1; } 45%, 75% { opacity: 0; } }
-@keyframes tg-ear-down { 0%, 12%, 100% { transform: none; } 45%, 75% { transform: translateY(8px); } }
-@keyframes tg-ear-up { 0%, 12%, 100% { transform: none; } 45%, 75% { transform: translateY(-8px); } }
-.tg-face, .tg-ear { transform-box: fill-box; transform-origin: center; }
+/* ---- 입체 얼굴: 둥근 머리는 그대로 두고, 앞쪽에 붙은 눈·코·입만 3D로 돌린다 ---- */
+.tg-head {
+  grid-area: head;
+  position: relative;
+  width: 132px;
+  height: 152px;
+  perspective: 360px;
+}
+.tg-skull {
+  position: absolute;
+  inset: 0;
+  border-radius: 50% 50% 47% 47% / 55% 55% 45% 45%;
+  background:
+    radial-gradient(circle at 34% 28%, rgba(255, 255, 255, 0.95) 0 14%, transparent 42%),
+    radial-gradient(circle at 50% 45%, #EEF2FB 0%, #DCE5F7 62%, #C9D6F0 100%);
+  border: 3px solid var(--blue);
+  box-shadow: inset -10px -14px 24px rgba(31, 79, 191, 0.12);
+}
+.tg-rotor {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+/* 얼굴 부품: 머리 앞면(translateZ)에 붙어 있어서 돌리면 옆으로 미끄러지며 살짝 눌려 보인다 */
+.tg-rotor > span {
+  position: absolute;
+  transform: translate(-50%, -50%) translateZ(50px);
+  backface-visibility: hidden;
+}
+.tg-eye { top: 46%; width: 10px; height: 13px; border-radius: 50%; background: var(--blue-dark); }
+.tg-eye::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #fff;
+}
+.tg-eye.l { left: 36%; }
+.tg-eye.r { left: 64%; }
+.tg-brow { top: 36%; width: 20px; height: 4px; border-radius: 4px; background: var(--blue-dark); opacity: 0.8; }
+.tg-brow.l { left: 35%; }
+.tg-brow.r { left: 65%; }
+.tg-cheek { top: 60%; width: 16px; height: 9px; border-radius: 50%; background: #F7B8C4; opacity: 0.6; }
+.tg-cheek.l { left: 28%; }
+.tg-cheek.r { left: 72%; }
+.tg-nose { left: 50%; top: 57%; width: 8px; height: 14px; border-radius: 6px; background: #B9C8EA; }
+.tg-mouth {
+  left: 50%;
+  top: 72%;
+  width: 28px;
+  height: 12px;
+  border: 3.5px solid var(--blue-dark);
+  border-top: none;
+  border-radius: 0 0 16px 16px;
+}
+.tg-shadow {
+  position: absolute;
+  left: 50%;
+  bottom: -18px;
+  width: 92px;
+  height: 12px;
+  margin-left: -46px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(26, 34, 51, 0.18), transparent);
+}
 
+/* 방향별로 돌릴 각도 — 화면 기준 (거울처럼) */
+.turn-guide[data-dir="left"] { --rx: 0deg; --ry: -36deg; }
+.turn-guide[data-dir="right"] { --rx: 0deg; --ry: 36deg; }
+.turn-guide[data-dir="up"] { --rx: 30deg; --ry: 0deg; }
+.turn-guide[data-dir="down"] { --rx: -30deg; --ry: 0deg; }
+.turn-guide:not([data-dir="center"]) .tg-rotor { animation: tg-look var(--cycle) var(--ease) infinite; }
+.turn-guide:not([data-dir="center"]) .tg-shadow { animation: tg-shadow var(--cycle) var(--ease) infinite; }
+.turn-guide[data-dir="center"] .tg-rotor { transform: none; transition: transform 0.6s var(--ease); }
+/* 정면 → 그 방향으로 천천히 → 잠깐 머물고 → 다시 정면 */
+@keyframes tg-look {
+  0%, 12% { transform: rotateX(0deg) rotateY(0deg); }
+  42%, 68% { transform: rotateX(var(--rx)) rotateY(var(--ry)); }
+  100% { transform: rotateX(0deg) rotateY(0deg); }
+}
+@keyframes tg-shadow {
+  0%, 12%, 100% { transform: scaleX(1); opacity: 1; }
+  42%, 68% { transform: scaleX(0.88); opacity: 0.75; }
+}
+
+/* ---- 화살표: 지금 방향만 파랗게, 부드럽게 퍼지는 빛 ---- */
 .tg-arrow {
-  width: 52px;
-  height: 52px;
+  position: relative;
+  width: 54px;
+  height: 54px;
   border-radius: 50%;
   display: grid;
   place-items: center;
   color: var(--line);
+  transition: color 0.4s var(--ease), background-color 0.4s var(--ease), transform 0.4s var(--ease);
 }
-.tg-arrow svg { width: 32px; height: 32px; stroke: currentColor; stroke-width: 3; }
+.tg-arrow svg { width: 30px; height: 30px; stroke: currentColor; stroke-width: 3; }
 .turn-guide[data-dir="left"] .tg-arrow.left,
 .turn-guide[data-dir="right"] .tg-arrow.right,
 .turn-guide[data-dir="up"] .tg-arrow.up,
-.turn-guide[data-dir="down"] .tg-arrow.down { color: #fff; background: var(--blue); }
-.turn-guide[data-dir="left"] .tg-arrow.left { animation: tg-nudge-x 1.8s ease-in-out infinite; --d: -8px; }
-.turn-guide[data-dir="right"] .tg-arrow.right { animation: tg-nudge-x 1.8s ease-in-out infinite; --d: 8px; }
-.turn-guide[data-dir="up"] .tg-arrow.up { animation: tg-nudge-y 1.8s ease-in-out infinite; --d: -8px; }
-.turn-guide[data-dir="down"] .tg-arrow.down { animation: tg-nudge-y 1.8s ease-in-out infinite; --d: 8px; }
-@keyframes tg-nudge-x { 0%, 100% { transform: none; } 50% { transform: translateX(var(--d)); } }
-@keyframes tg-nudge-y { 0%, 100% { transform: none; } 50% { transform: translateY(var(--d)); } }
+.turn-guide[data-dir="down"] .tg-arrow.down {
+  color: #fff;
+  background: linear-gradient(145deg, #2F63D6, var(--blue-dark));
+  box-shadow: 0 8px 18px rgba(31, 79, 191, 0.35);
+  animation: tg-arrow-glow var(--cycle) var(--ease) infinite;
+}
+@keyframes tg-arrow-glow {
+  0%, 12% { box-shadow: 0 8px 18px rgba(31, 79, 191, 0.35), 0 0 0 0 rgba(31, 79, 191, 0.35); }
+  42% { box-shadow: 0 8px 18px rgba(31, 79, 191, 0.35), 0 0 0 14px rgba(31, 79, 191, 0); }
+  100% { box-shadow: 0 8px 18px rgba(31, 79, 191, 0.35), 0 0 0 0 rgba(31, 79, 191, 0); }
+}
 
-/* 방향 판: 가운데가 정면, 점이 지금 고개 방향 */
+/* ---- 방향 판: 가운데가 정면, 점이 지금 고개 방향 ---- */
 .tg-pad {
   position: relative;
-  width: 170px;
-  height: 170px;
-  border-radius: 20px;
+  width: 176px;
+  height: 176px;
+  border-radius: 24px;
   background: var(--panel-alt);
   border: 1px solid var(--line);
+  box-shadow: inset 0 2px 6px rgba(26, 34, 51, 0.06);
   overflow: hidden;
   flex: none;
 }
-.tg-zone { position: absolute; background: #E7E5DF; }
+.tg-zone { position: absolute; background: rgba(222, 220, 213, 0.55); transition: background-color 0.4s var(--ease); }
 .tg-zone.left { left: 0; top: 0; bottom: 0; }
 .tg-zone.right { right: 0; top: 0; bottom: 0; }
 .tg-zone.up { top: 0; left: 0; right: 0; }
 .tg-zone.down { bottom: 0; left: 0; right: 0; }
-.tg-zone.target { background: var(--blue-soft); box-shadow: inset 0 0 0 2px var(--blue); z-index: 1; }
+.tg-zone.target {
+  z-index: 1;
+  background: linear-gradient(var(--blue-soft), var(--blue-soft));
+  box-shadow: inset 0 0 0 2px var(--blue);
+  animation: tg-breathe 2.2s ease-in-out infinite;
+}
+@keyframes tg-breathe { 0%, 100% { opacity: 0.75; } 50% { opacity: 1; } }
 .tg-cross {
   position: absolute;
   inset: 0;
   background:
     linear-gradient(var(--muted), var(--muted)) center / 1px 100% no-repeat,
     linear-gradient(var(--muted), var(--muted)) center / 100% 1px no-repeat;
-  opacity: 0.35;
+  opacity: 0.25;
+}
+/* 판 전체 크기의 투명한 층을 옮겨서 점을 움직인다 — 인식 결과가 띄엄띄엄 와도 사이를 부드럽게 잇는다 */
+.tg-dot-track {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform;
 }
 .tg-dot {
-  position: absolute;
-  z-index: 2;
-  width: 26px;
-  height: 26px;
-  margin: -13px 0 0 -13px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   background: var(--text);
   border: 3px solid #fff;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-  transition: left 0.15s linear, top 0.15s linear, background 0.2s;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.25), 0 0 0 6px rgba(26, 34, 51, 0.08);
+  transition: background-color 0.3s var(--ease), box-shadow 0.3s var(--ease), transform 0.3s var(--ease);
 }
-.tg-dot.hit { background: var(--ok); }
+.tg-dot.hit {
+  background: var(--ok);
+  transform: scale(1.15);
+  box-shadow: 0 3px 10px rgba(22, 163, 74, 0.35), 0 0 0 8px rgba(22, 163, 74, 0.18);
+}
 .tg-pad-label {
   position: absolute;
-  z-index: 2;
+  z-index: 3;
   left: 0;
   right: 0;
-  bottom: 6px;
+  bottom: 7px;
   text-align: center;
   font-size: 11px;
   color: var(--muted);
 }
 
-.tg-steps { list-style: none; display: flex; justify-content: center; gap: 8px; padding: 0; margin: 18px 0 0; flex-wrap: wrap; }
-.tg-steps li {
+/* ---- 단계 표시: 선으로 이은 칩, 끝나면 ✓가 튀어나온다 ---- */
+.tg-steps { list-style: none; display: flex; justify-content: center; align-items: center; padding: 0; margin: 30px 0 0; flex-wrap: wrap; row-gap: 8px; }
+.tg-steps li:not(.tg-link) {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -439,7 +537,9 @@ main {
   background: var(--panel-alt);
   color: var(--muted);
   font-weight: 700;
+  transition: background-color 0.4s var(--ease), color 0.4s var(--ease);
 }
+.tg-steps .tg-link { width: 22px; height: 2px; background: var(--line); border-radius: 2px; }
 .tg-steps b {
   width: 22px;
   height: 22px;
@@ -449,14 +549,17 @@ main {
   font-size: 12px;
   background: var(--line);
   color: #fff;
+  transition: background-color 0.4s var(--ease);
 }
-.tg-steps li.now { background: var(--blue-soft); color: var(--blue); }
+.tg-steps li.now { background: var(--blue-soft); color: var(--blue); box-shadow: 0 0 0 2px var(--blue-line, #C3D0EC); }
 .tg-steps li.now b { background: var(--blue); }
-.tg-steps li.done { color: var(--ok); }
+.tg-steps li.done { background: #E3F4E8; color: var(--ok); }
 .tg-steps li.done b { background: var(--ok); }
+.tg-steps li.pop b { animation: tg-pop 0.5s cubic-bezier(0.3, 1.6, 0.5, 1); }
+@keyframes tg-pop { 0% { transform: scale(0.4); } 100% { transform: scale(1); } }
 
 @media (prefers-reduced-motion: reduce) {
-  .turn-guide * { animation: none !important; }
+  .turn-guide * { animation: none !important; transition: none !important; }
 }
 
 /* ---------- 결과 / 출석 현황 ---------- */
