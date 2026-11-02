@@ -1,0 +1,106 @@
+/* 첫 화면 조교 로그인 — 색·로고는 style.css를 그대로 쓴다 */
+.login-page { min-height: 100vh; }
+
+.login-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  width: min(1080px, 100%);
+  margin: auto;
+  padding: 0;
+  min-height: 560px;
+  border-radius: 28px;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: 0 24px 60px rgba(26, 34, 51, 0.12);
+  place-items: stretch;
+}
+.login-page main.login-wrap { flex: none; }
+body.login-page { justify-content: center; padding: 32px 16px; }
+
+/* 왼쪽 파란 패널 — 출근 카드와 같은 색과 빛 */
+.login-hero {
+  position: relative;
+  background: var(--blue);
+  color: #fff;
+  padding: 56px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 18px;
+  overflow: hidden;
+}
+.login-hero::before {
+  content: "";
+  position: absolute;
+  inset: -30% -30% auto auto;
+  width: 80%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255, 255, 255, 0.18), transparent);
+}
+.hero-logo { width: 64px; height: 64px; background: rgba(255, 255, 255, 0.14); color: #fff; border-radius: 18px; }
+.hero-logo svg { width: 36px; height: 36px; }
+.login-hero h1 { margin: 12px 0 0; font-size: 40px; line-height: 1.25; letter-spacing: -0.03em; }
+.login-hero p { margin: 0; font-size: 18px; opacity: 0.85; line-height: 1.6; }
+.login-hero small { margin-top: auto; opacity: 0.7; font-weight: 700; letter-spacing: 0.04em; }
+
+/* 오른쪽 로그인 폼 */
+.login-form {
+  padding: 56px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 14px;
+}
+.login-form h2 { margin: 0; font-size: 32px; letter-spacing: -0.02em; }
+.login-form > .muted { margin: 0 0 12px; }
+
+.field { display: flex; flex-direction: column; gap: 8px; font-weight: 700; font-size: 14px; color: var(--text-sub); }
+.input-icon { position: relative; display: block; }
+.input-icon svg {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  width: 22px;
+  height: 22px;
+  transform: translateY(-50%);
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.input-icon input {
+  width: 100%;
+  font: inherit;
+  font-size: 17px;
+  font-weight: 400;
+  color: var(--text);
+  background: #fff;
+  border: 1.5px solid var(--line);
+  border-radius: 14px;
+  padding: 15px 16px 15px 48px;
+}
+.input-icon input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 4px var(--blue-soft); }
+.input-icon:focus-within svg { stroke: var(--blue); }
+
+.error-text { color: var(--err); margin: 0; min-height: 1.3em; font-size: 14px; }
+.login-btn { padding: 16px; font-size: 18px; border-radius: 14px; }
+.login-btn:disabled { opacity: 0.6; cursor: default; }
+.dummy-note {
+  margin: 8px 0 0;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #FFF4DF;
+  color: var(--warn);
+  font-size: 13px;
+}
+
+@media (max-width: 760px) {
+  .login-wrap { grid-template-columns: 1fr; min-height: 0; }
+  .login-hero { padding: 32px 24px; }
+  .login-hero h1 { font-size: 28px; }
+  .login-hero small { display: none; }
+  .login-form { padding: 32px 24px; }
+}

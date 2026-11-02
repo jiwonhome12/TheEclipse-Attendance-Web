@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>조교 로그인</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/login.css">
+</head>
+<body class="login-page">
+  <main class="login-wrap">
+    <!-- 왼쪽: 소개 (출근 카드와 같은 파란 패널) -->
+    <section class="login-hero" aria-hidden="true">
+      <span class="logo-tile hero-logo">
+        <svg viewBox="0 0 24 24">
+          <path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/>
+          <path d="M9 9.5v.5M15 9.5v.5M9.5 15a3.5 3.5 0 0 0 5 0"/>
+        </svg>
+      </span>
+      <h1>창의공간<br>얼굴 인식 출석체크</h1>
+      <p>조교 계정으로 로그인하면<br>출퇴근 화면이 열립니다.</p>
+      <small>소프트웨어전공</small>
+    </section>
+
+    <!-- 오른쪽: 로그인 -->
+    <form id="staff-login" class="login-form">
+      <h2>조교 로그인</h2>
+      <p class="muted">사번과 비밀번호를 입력하세요</p>
+
+      <label class="field">
+        <span>사번</span>
+        <span class="input-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2"/><path d="M6 16c.6-1.5 1.7-2 3-2s2.4.5 3 2M14 10h4M14 13h3"/></svg>
+          <input id="staff-id" autocomplete="username" inputmode="numeric" required autofocus>
+        </span>
+      </label>
+
+      <label class="field">
+        <span>비밀번호</span>
+        <span class="input-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+          <input id="staff-pw" type="password" autocomplete="current-password" required>
+        </span>
+      </label>
+
+      <p id="staff-error" class="error-text" role="alert"></p>
+      <button class="primary login-btn" type="submit">로그인</button>
+      <p class="dummy-note">시험용 로그인입니다 — 지금은 사번·비밀번호를 아무 값이나 넣어도 들어갑니다.</p>
+    </form>
+  </main>
+
+  <script>
+    const form = document.getElementById("staff-login");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const error = document.getElementById("staff-error");
+      error.textContent = "";
+      const button = form.querySelector("button");
+      button.disabled = true;
+      try {
+        const resp = await fetch("/api/staff/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            staff_id: document.getElementById("staff-id").value,
+            password: document.getElementById("staff-pw").value,
+          }),
+        });
+        if (!resp.ok) throw new Error((await resp.json()).detail || "로그인하지 못했습니다.");
+        location.href = "/";
+      } catch (err) {
+        error.textContent = err.message;
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

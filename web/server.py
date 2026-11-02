@@ -5,6 +5,7 @@
     python web/server.py --host 0.0.0.0  # 같은 와이파이의 다른 기기에서도 관리자 화면(/admin)에 접속
 
 카메라와 얼굴 인식은 서버(이 PC)에서 돌고, 브라우저는 /ws로 상태를 받아 화면만 그린다.
+처음 열면 조교 로그인(/login, 지금은 더미 — staff_auth.py)을 거쳐 출석 화면이 나온다.
 관리자 화면은 http://127.0.0.1:8000/admin (기본 계정 1234 / 1234 — 운영 전에 꼭 바꾼다).
 """
 import argparse
@@ -19,11 +20,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import core  # noqa: E402
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect  # noqa: E402
-from fastapi.responses import FileResponse, StreamingResponse  # noqa: E402
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 import admin_api  # noqa: E402
+import staff_auth  # noqa: E402
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 VIDEO_FPS = 10 if core.LOW_POWER else 20  # 브라우저로 보내는 영상의 초당 장수
@@ -45,11 +47,26 @@ app = FastAPI(title="창의공간 출석체크", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/assets", StaticFiles(directory=os.path.join(core.RESOURCE_DIR, "assets")), name="assets")
 app.include_router(admin_api.router)
+app.include_router(staff_auth.router)
+
+
+# 로그인 여부에 따라 달라지는 페이지 — 브라우저가 저장해 둔 화면을 그대로 띄우면 로그아웃해도 출석 화면이 보인다
+NO_STORE = {"Cache-Control": "no-store"}
 
 
 @app.get("/")
-def index():
-    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+def index(request: Request):
+    # 조교가 로그인해야 출석 화면이 열린다
+    if staff_auth.staff_session(request) is None:
+        return RedirectResponse("/login", headers=NO_STORE)
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"), headers=NO_STORE)
+
+
+@app.get("/login")
+def login_page(request: Request):
+    if staff_auth.staff_session(request) is not None:
+        return RedirectResponse("/", headers=NO_STORE)
+    return FileResponse(os.path.join(STATIC_DIR, "login.html"), headers=NO_STORE)
 
 
 @app.get("/admin")

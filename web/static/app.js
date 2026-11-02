@@ -28,7 +28,9 @@ document.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-action]");
   if (!btn) return;
   const action = btn.dataset.action;
-  if (action === "home") post("/api/idle");
+  if (action === "staff-logout") {
+    fetch("/api/staff/logout", { method: "POST" }).finally(() => { location.href = "/login"; });
+  } else if (action === "home") post("/api/idle");
   else if (action === "lookup") post("/api/session", { mode: "lookup" });
   else if (action === "test") post("/api/session", { mode: "test" });
   else post("/api/session", { mode: "attendance", action });
