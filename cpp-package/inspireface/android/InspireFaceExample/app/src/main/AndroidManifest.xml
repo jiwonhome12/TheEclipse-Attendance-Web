@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera.autofocus"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera.front"
+        android:required="false" />
+
+    <application
+        android:name=".App"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:localeConfig="@xml/locales_config"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.InspireFaceExample"
+        tools:targetApi="33">
+        <activity
+            android:name=".view.FaceCaptureActivity"
+            android:exported="false"
+            android:theme="@style/Theme.InspireFaceExample.Liveness" />
+        <activity
+            android:name=".FaceManagementActivity"
+            android:exported="false"
+            android:theme="@style/Theme.InspireFaceExample.Home" />
+        <activity
+            android:name=".FaceRecognitionActivity"
+            android:exported="false"
+            android:theme="@style/Theme.InspireFaceExample.Home" />
+        <activity
+            android:name=".FaceDetectionActivity"
+            android:exported="false"
+            android:theme="@style/Theme.InspireFaceExample.Home" />
+        <activity
+            android:name=".FaceAttributeActivity"
+            android:exported="false"
+            android:theme="@style/Theme.InspireFaceExample.Home" />
+        <activity
+            android:name=".FaceCompareActivity"
+            android:exported="false"
+            android:theme="@style/Theme.InspireFaceExample.Home" />
+        <activity
+            android:name=".view.PoseActivity"
+            android:exported="false"
+            android:theme="@style/Theme.InspireFaceExample.Liveness" />
+        <activity
+            android:name=".view.ActionLivenessActivity"
+            android:exported="false"
+            android:theme="@style/Theme.InspireFaceExample.Liveness" />
+        <activity
+            android:name=".view.LivenessActivity"
+            android:exported="false"
+            android:theme="@style/Theme.InspireFaceExample.Liveness" />
+        <activity
+            android:name=".HomeActivity"
+            android:exported="true"
+            android:theme="@style/Theme.InspireFaceExample.Home">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Android 7–11 equivalent of data_extraction_rules.xml. -->
+    <exclude domain="file" path="face_hub/" />
+    <exclude domain="sharedpref" path="face_records_Pikachu.xml" />
+    <exclude domain="sharedpref" path="face_records_Megatron.xml" />
+    <exclude domain="sharedpref" path="camera_permission.xml" />
+</full-backup-content>
