@@ -282,15 +282,7 @@ class DatePicker(Button):
         ).grid(row=len(weeks) + 2, column=0, columnspan=7, sticky=tk.EW, padx=px(6), pady=px(6))
 
 
-# 전체 출결로그 조회 조건의 체크 항목 — (키, 화면에 보이는 이름). 아무것도 체크하지 않으면 기간 내역(custom)
-LOG_FILTER_MODES = [
-    ("week_days", f"주 {WEEKLY_REQUIRED_DAYS}회 이상 출석"),
-    ("week_hours", f"주 {WEEKLY_REQUIRED_SECONDS // 3600}시간 이상 출석"),
-    ("month", "월 단위"),
-    ("recent7_sum", "최근 7일 합계"),
-]
-LOG_SUMMARY_MODES = {"recent7_sum", "week_days", "week_hours"}
-
+# 전체 출결로그 조회 조건(LOG_FILTER_MODES)은 웹 관리자 화면과 같이 쓰도록 core.py에 있다
 ACTION_LABELS = {"CHECK_IN": "출근", "CHECK_OUT": "퇴근"}
 ACTION_COLORS = {"CHECK_IN": ("#10B981", "#059669"), "CHECK_OUT": ("#3B82F6", "#2563EB")}
 
@@ -659,16 +651,11 @@ class AdminLoginDialog(tk.Toplevel):
             messagebox.showwarning("주의", "아이디와 비밀번호를 입력해주세요.", parent=self)
             return
 
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT role FROM users WHERE user_id = ? AND password = ?", (user_id, pwd))
-        row = cursor.fetchone()
-        conn.close()
-
-        if not row:
+        result = check_admin_login(user_id, pwd)
+        if result == "wrong":
             messagebox.showerror("오류", "로그인 정보가 틀렸습니다.", parent=self)
             return
-        if row[0] != "admin":
+        if result == "not_admin":
             messagebox.showerror("오류", "관리자 권한이 없습니다.", parent=self)
             return
 
@@ -1899,8 +1886,7 @@ class AdminDashboardFrame(tk.Frame):
         DB 데이터는 읽기만 하고 건드리지 않는다.
         """
         try:
-            import openpyxl
-            from openpyxl.styles import Font, Alignment, PatternFill
+            wb, count = attendance_workbook()
         except ImportError:
             messagebox.showerror(
                 "추출 실패",
@@ -1908,28 +1894,11 @@ class AdminDashboardFrame(tk.Frame):
                 "터미널에서 아래 명령으로 설치한 뒤 다시 시도해주세요:\n  pip install openpyxl",
             )
             return
-
-        try:
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT user_id, name, log_date, log_type, log_time
-                FROM attendance_logs
-                ORDER BY log_date ASC, name ASC, log_time ASC
-            """)
-            rows = cursor.fetchall()
-            conn.close()
         except Exception as e:
             messagebox.showerror("추출 실패", f"출석 데이터를 불러오는 중 오류가 발생했습니다.\n\n{e}")
             return
 
-        # 출근→퇴근 한 쌍을 한 행으로 묶는다 (attendance.json 내보내기와 같은 방식, 하루 여러 번이면 여러 행)
-        records = sorted(
-            pair_attendance_sessions(rows),
-            key=lambda r: (r["date"], r["name"] or "", r["check_in"] or r["check_out"] or ""),
-        )
-
-        if not records:
+        if wb is None:
             messagebox.showinfo("추출할 데이터 없음", "저장된 출석 기록이 없습니다.")
             return
 
@@ -1944,53 +1913,12 @@ class AdminDashboardFrame(tk.Frame):
             return  # 사용자가 취소함
 
         try:
-            wb = openpyxl.Workbook()
-            ws = wb.active
-            ws.title = "출석기록"
-
-            headers = ["학번", "이름", "날짜", "출근시간", "퇴근시간", "근무시간(시간)", "비고"]
-            ws.append(headers)
-            header_font = Font(bold=True, color="FFFFFF")
-            header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
-            for col_idx in range(1, len(headers) + 1):
-                cell = ws.cell(row=1, column=col_idx)
-                cell.font = header_font
-                cell.fill = header_fill
-                cell.alignment = Alignment(horizontal="center")
-
-            for rec in records:
-                check_in = rec["check_in"]
-                check_out = rec["check_out"]
-
-                work_hours = ""
-                seconds = session_seconds(rec)
-                if seconds > 0:
-                    work_hours = round(seconds / 3600.0, 2)
-
-                if check_in and check_out:
-                    note = "정상 출퇴근"
-                elif check_in and not check_out:
-                    note = "퇴근 기록 없음"
-                elif check_out and not check_in:
-                    note = "출근 기록 없음"
-                else:
-                    note = "결석"
-
-                ws.append([
-                    rec["user_id"], rec["name"], rec["date"],
-                    check_in or "-", check_out or "-",
-                    work_hours, note,
-                ])
-
-            for col_idx, width in enumerate([12, 10, 12, 10, 10, 14, 14], start=1):
-                ws.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = width
-
             wb.save(path)
         except Exception as e:
             messagebox.showerror("추출 실패", f"엑셀 파일을 저장하는 중 오류가 발생했습니다.\n\n{e}")
             return
 
-        messagebox.showinfo("추출 완료", f"출석 데이터 {len(records)}건을 엑셀 파일로 저장했습니다.\n\n{path}")
+        messagebox.showinfo("추출 완료", f"출석 데이터 {count}건을 엑셀 파일로 저장했습니다.\n\n{path}")
 
     # 학생 목록 컬럼 — (키, 제목, 폭)
     STUDENT_COLUMNS = (("id", "학번", 150), ("name", "이름", 110), ("major", "전공", 170),
@@ -2384,71 +2312,18 @@ class AdminDashboardFrame(tk.Frame):
 
     @staticmethod
     def _roster_error_message(error):
-        import urllib.error
-        if isinstance(error, SheetsApiError):
-            if error.status == 403 and "has not been used" in error.detail:
-                return ("Google Cloud 프로젝트에서 Google Sheets API가 꺼져 있습니다.\n"
-                        "Cloud 콘솔 → API 및 서비스 → 라이브러리에서 'Google Sheets API'를 사용 설정해주세요.\n\n"
-                        f"{error.detail}")
-            if error.status in (403, 404):
-                email = google_service_account_email() or "(키 파일의 서비스 계정 이메일)"
-                return ("응답 시트를 읽을 권한이 없거나 시트를 찾지 못했습니다.\n"
-                        f"응답 시트의 [공유]에서 아래 이메일을 '뷰어'로 추가해주세요.\n\n{email}\n\n"
-                        f"({error.status}: {error.detail})")
-            return f"구글 시트를 읽지 못했습니다.\n\n{error.status}: {error.detail}"
-        if isinstance(error, FileNotFoundError) and error.filename == GOOGLE_KEY_PATH:
-            return ("서비스 계정 키 파일이 없습니다.\n"
-                    "[설정] 탭의 '서비스 계정 키'에서 Google Cloud에서 받은 JSON 키 파일을 골라주세요.")
-        if isinstance(error, FileNotFoundError):
-            return ("roster.json 파일을 찾을 수 없습니다.\n"
-                    "[설정] 탭에 구글폼 응답 주소를 넣거나, 창공시스템을 먼저 실행해서 학생을 등록해주세요.\n\n"
-                    f"찾아본 위치:\n{ROSTER_PATH}")
-        if isinstance(error, json.JSONDecodeError):
-            return (f"roster.json 파일의 형식이 올바르지 않습니다 (JSON 오류: {error}).\n"
-                    "창공시스템 쪽에서 파일이 다 써지는 중에 읽었을 수도 있으니 잠시 후 다시 시도해주세요.")
-        if isinstance(error, (urllib.error.URLError, OSError)) or type(error).__module__.startswith(
-                ("requests", "google.auth")):
-            return ("구글폼 응답을 불러오지 못했습니다.\n"
-                    f"인터넷 연결과 [설정] 탭의 구글폼 응답 주소를 확인해주세요.\n\n{error}")
-        return f"명단을 불러오는 중 오류가 발생했습니다.\n\n{error}"
+        return roster_error_message(error)
 
     def _fill_blanks_from_roster(self):
-        """
-        이미 등록된 학생 중 전화번호·학년이 비어 있으면 명단(구글폼 응답) 값으로 채운다.
-        관리자가 직접 입력한 값은 덮어쓰지 않는다. 바뀐 학생 수를 돌려준다.
-        """
-        by_id = {str(s.get("StudentId", "")).strip(): s for s in self._roster}
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, phone, grade FROM users WHERE role = 'student' AND (phone = '' OR grade = '')")
-        changed = 0
-        for user_id, phone, grade in cursor.fetchall():
-            student = by_id.get(str(user_id))
-            if not student:
-                continue
-            new_phone = phone or str(student.get("Phone") or "").strip()
-            new_grade = grade or normalize_grade(student.get("Grade"))
-            if (new_phone, new_grade) != (phone, grade):
-                cursor.execute("UPDATE users SET phone = ?, grade = ? WHERE user_id = ?", (new_phone, new_grade, user_id))
-                changed += 1
-        conn.commit()
-        conn.close()
-        return changed
+        """이미 등록된 학생의 빈 전화번호·학년을 명단 값으로 채운다. 바뀐 학생 수를 돌려준다."""
+        return fill_blank_contacts_from_roster(self._roster)
 
     def reload_roster_combo(self):
         """받아 둔 명단에서 아직 등록 안 된 학생만 목록에 채운다."""
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id FROM users WHERE role = 'student'")
-        already_registered = {str(row[0]) for row in cursor.fetchall()}
-        conn.close()
-
         self._roster_map = {}
         values = []
-        for student in self._roster:
+        for student in unregistered_roster(self._roster):
             sid = str(student.get("StudentId", "")).strip()
-            if not sid or sid in already_registered:
-                continue
             label = f"{sid} - {student.get('Name', '')}"
             self._roster_map[label] = student
             values.append(label)
@@ -2583,37 +2458,20 @@ class AdminDashboardFrame(tk.Frame):
     def get_log_period(self):
         """현재 조회 조건의 실제 조회 기간 (시작일, 종료일)."""
         mode = self.current_log_mode()
-        today = date.today()
-        if mode == "recent7_sum":
-            return today - timedelta(days=6), today
-
-        anchor = self.date_start.get_date()
-        if mode == "month":
-            last_day = calendar.monthrange(anchor.year, anchor.month)[1]
-            return anchor.replace(day=1), anchor.replace(day=last_day)
-        if mode in ("week_days", "week_hours"):
-            monday = anchor - timedelta(days=anchor.weekday())
-            return monday, monday + timedelta(days=6)
-
         start, end = self.date_start.get_date(), self.date_end.get_date()
-        if start > end:  # 거꾸로 골랐으면 순서를 바로잡아 보여준다
+        if mode == "custom" and start > end:  # 거꾸로 골랐으면 순서를 바로잡아 보여준다
             self.date_start.set_date(end)
             self.date_end.set_date(start)
-            start, end = end, start
-        return start, end
+        return log_period(mode, start, end)
 
     # DB 및 로드 제어 기능들
     def load_students(self):
         self.tree_students.delete(*self.tree_students.get_children())
         self._checked.clear()
         self.tree_students.heading("#0", image=self._img_box)
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, name, major, penalty, phone, grade FROM users WHERE role = 'student'")
-        for r in cursor.fetchall():
+        for r in list_students():
             # iid를 학번으로 두면 체크한 학생을 학번으로 바로 찾을 수 있다
             self.tree_students.insert("", tk.END, iid=str(r[0]), image=self._img_box, values=r)
-        conn.close()
         count = len(self.tree_students.get_children())
         self.lbl_student_count.config(text=f"등록된 학생 {count}명 · 체크한 학생은 휴지통으로 지웁니다")
         self.clear_edit_form()
@@ -2691,44 +2549,29 @@ class AdminDashboardFrame(tk.Frame):
             ("penalty", "패널티", 70, tk.CENTER),
         ])
 
-        query = """
-            SELECT a.user_id, a.name, a.log_type, a.log_date, a.log_time, a.photo_path, u.penalty
-            FROM attendance_logs a
-            LEFT JOIN users u ON u.user_id = a.user_id
-            WHERE a.log_date BETWEEN ? AND ?
-        """
-        params = [start.isoformat(), end.isoformat()]
-        if keyword:
-            query += " AND (a.name LIKE ? OR a.user_id LIKE ?)"
-            params += [f"%{keyword}%", f"%{keyword}%"]
-        query += " ORDER BY a.log_date DESC, a.log_time DESC"
-
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        conn.close()
-
-        for user_id, name, log_type, log_date, log_time, photo_path, penalty in rows:
-            valid = is_valid_attendance_time(log_time)
-            type_text = "출근" if log_type == "CHECK_IN" else "퇴근"
-            if not valid:
+        rows = query_log_rows(start, end, keyword)
+        for r in rows:
+            type_text = "출근" if r["log_type"] == "CHECK_IN" else "퇴근"
+            if not r["valid"]:
                 type_text += " (미인정)"  # 00:00~06:00 기록은 일수/시간 계산에서 빠진다
             try:
-                date_text = format_date_ko(datetime.strptime(log_date, "%Y-%m-%d").date())
+                date_text = format_date_ko(datetime.strptime(r["log_date"], "%Y-%m-%d").date())
             except (TypeError, ValueError):
-                date_text = log_date
+                date_text = r["log_date"]
             item = self.tree_logs.insert(
                 "", tk.END,
-                values=(user_id, name, type_text, date_text, log_time, "" if penalty is None else penalty),
-                tags=() if valid else ("invalid",)
+                values=(r["user_id"], r["name"], type_text, date_text, r["log_time"],
+                        "" if r["penalty"] is None else r["penalty"]),
+                tags=() if r["valid"] else ("invalid",)
             )
-            if photo_path:
-                self._log_photos[item] = (photo_path, f"{name} ({user_id}) · {date_text} {log_time} {type_text}")
+            if r["photo_path"]:
+                self._log_photos[item] = (r["photo_path"],
+                                          f"{r['name']} ({r['user_id']}) · {date_text} {r['log_time']} {type_text}")
 
-        check_in = sum(1 for r in rows if r[2] == "CHECK_IN")
+        check_in = sum(1 for r in rows if r["log_type"] == "CHECK_IN")
         self.lbl_log_result.config(
-            text=f"총 {len(rows)}건 (출근 {check_in} · 퇴근 {len(rows) - check_in}) · 학생 {len({r[0] for r in rows})}명"
+            text=f"총 {len(rows)}건 (출근 {check_in} · 퇴근 {len(rows) - check_in}) "
+                 f"· 학생 {len({r['user_id'] for r in rows})}명"
         )
 
     def show_log_photo(self):
@@ -2762,20 +2605,7 @@ class AdminDashboardFrame(tk.Frame):
             ("seconds", "출석 시간 합계", 170, tk.CENTER),
         ])
 
-        summary = get_attendance_summary_by_student(start.isoformat(), end.isoformat())
-        if keyword:
-            summary = [s for s in summary if keyword in s["name"] or keyword in s["user_id"]]
-
-        # 기준은 학생 화면의 주간 현황과 같다: 인정 출근 일수 ≥ 3일, 인정 시간 ≥ 20시간 (월~일)
-        if mode == "week_days":
-            summary = [s for s in summary if s["days"] >= WEEKLY_REQUIRED_DAYS]
-            summary.sort(key=lambda s: (-s["days"], -s["seconds"], s["name"]))
-        elif mode == "week_hours":
-            summary = [s for s in summary if s["seconds"] >= WEEKLY_REQUIRED_SECONDS]
-            summary.sort(key=lambda s: (-s["seconds"], -s["days"], s["name"]))
-        else:
-            summary.sort(key=lambda s: (-s["seconds"], -s["days"], s["name"]))
-
+        summary = query_log_summary(mode, start, end, keyword)
         for s in summary:
             self.tree_logs.insert("", tk.END, values=(s["user_id"], s["name"], f"{s['days']}일",
                                                       format_duration(s["seconds"])))
@@ -2809,29 +2639,12 @@ class AdminDashboardFrame(tk.Frame):
 
         student_id = self.tree_students.item(selected[0], "values")[0]
         values = {key: entry.get().strip() for key, entry in self.edit_entries.items()}
-
-        # 전화번호·학년은 아직 모르는 학생도 있어서 비워둘 수 있다
-        if not (values["name"] and values["major"] and values["penalty"]):
-            messagebox.showwarning("경고", "이름, 전공, 패널티는 꼭 입력하세요.")
-            return
-
         try:
-            penalty = int(values["penalty"])
-        except ValueError:
-            messagebox.showerror("오류", "패널티는 정수형만 입력 가능합니다.")
+            core.update_student(student_id, values["name"], values["major"], values["penalty"],
+                                values["phone"], values["grade"])
+        except ValueError as e:
+            messagebox.showwarning("입력 확인", str(e))
             return
-        if values["grade"] and not values["grade"].isdigit():
-            messagebox.showerror("오류", "학년은 숫자만 입력 가능합니다.")
-            return
-
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE users SET name = ?, major = ?, penalty = ?, phone = ?, grade = ?
-            WHERE user_id = ?
-        """, (values["name"], values["major"], penalty, values["phone"], values["grade"], student_id))
-        conn.commit()
-        conn.close()
 
         messagebox.showinfo("수정 성공", "학생 정보 변경이 완료되었습니다.")
         self.load_students()
@@ -2854,46 +2667,12 @@ class AdminDashboardFrame(tk.Frame):
         if not messagebox.askyesno("삭제 확인", question + "\n출결 기록과 출퇴근 사진도 함께 삭제됩니다."):
             return
 
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        photo_paths = []
-        for student_id, _name in students:
-            # SQLite 타입 유연성을 고려하여 문자열 및 정수형 모두 삭제 쿼리 반영
-            alt_id = int(student_id) if str(student_id).isdigit() else student_id
-            cursor.execute("SELECT photo_path FROM attendance_logs WHERE user_id = ? OR user_id = ?",
-                           (str(student_id), alt_id))
-            photo_paths += [row[0] for row in cursor.fetchall()]
-            cursor.execute("DELETE FROM users WHERE user_id = ? OR user_id = ?", (str(student_id), alt_id))
-            cursor.execute("DELETE FROM attendance_logs WHERE user_id = ? OR user_id = ?",
-                           (str(student_id), alt_id))
-        conn.commit()
-        conn.close()
-        delete_photo_files(photo_paths)  # 출결 기록과 함께 그 학생의 출퇴근 사진도 지운다
+        delete_students([student_id for student_id, _name in students])  # 출결 기록·출퇴근 사진도 같이
 
         messagebox.showinfo("성공", f"학생 {len(students)}명의 정보가 삭제되었습니다.")
         self.load_students()
         self.load_logs()
         self.parent.reload_users()
-
-    def _find_duplicate_face(self, embedding):
-        """새로 등록하려는 얼굴 임베딩이 기존 등록자와 동일 인물로 보이는지 확인한다.
-        인식 화면에서 쓰는 것과 같은 코사인 유사도 THRESHOLD를 기준으로 삼는다."""
-        enrolled_users = self.parent.enrolled_users
-        embed_matrix = self.parent.embed_matrix
-        if not enrolled_users or embed_matrix is None or len(embed_matrix) == 0:
-            return None
-
-        norm = np.linalg.norm(embedding)
-        if norm == 0:
-            return None
-        normed = embedding / norm
-
-        sims = embed_matrix @ normed
-        best_idx = int(np.argmax(sims))
-        best_sim = float(sims[best_idx])
-        if best_sim >= THRESHOLD:
-            return enrolled_users[best_idx]
-        return None
 
     def register_student(self):
         values = {key: entry.get().strip() for key, entry in self.add_entries.items()}
@@ -2922,16 +2701,8 @@ class AdminDashboardFrame(tk.Frame):
             )
             return
 
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM users WHERE user_id = ?", (s_id,))
-        if cursor.fetchone():
-            messagebox.showerror("오류", "이미 가입된 학번 ID입니다.")
-            conn.close()
-            return
-
         new_embedding = self.parent.cached_faces[0].embedding.astype(np.float32)
-        dup_user = self._find_duplicate_face(new_embedding)
+        dup_user = find_duplicate_face(new_embedding, self.parent.enrolled_users, self.parent.embed_matrix)
         if dup_user:
             messagebox.showerror(
                 "중복 얼굴 감지",
@@ -2939,16 +2710,13 @@ class AdminDashboardFrame(tk.Frame):
                 f"기존 등록자: {dup_user['name']} ({dup_user['user_id']})\n"
                 "동일 인물로 판단되어 등록을 진행하지 않습니다."
             )
-            conn.close()
             return
 
-        emb = new_embedding.tobytes()
-        cursor.execute("""
-            INSERT INTO users (user_id, name, major, role, embedding, penalty, phone, grade)
-            VALUES (?, ?, ?, ?, ?, 0, ?, ?)
-        """, (s_id, name, major, 'student', emb, phone, grade))
-        conn.commit()
-        conn.close()
+        try:
+            insert_student(s_id, name, major, phone, grade, new_embedding)
+        except ValueError as e:
+            messagebox.showerror("오류", str(e))
+            return
 
         messagebox.showinfo("성공", f"[{name}] 학생이 성공적으로 등록되었습니다.")
         self.clear_add_form()

@@ -21,7 +21,9 @@ import core
 #   result     : 출근/퇴근 처리 결과 (카메라 꺼짐, 잠시 뒤 메인 화면으로)
 #   stats      : 본인 출석 현황 (카메라 꺼짐, 잠시 뒤 메인 화면으로)
 #   test       : [카메라 테스트]. 카메라와 인식 결과만 보여주고 기록은 하지 않는다
+#   register   : 관리자 [학생 등록] 탭이 열려 있다. 카메라를 켜고 등록할 얼굴을 기다린다
 SESSION_MODES = ("attendance", "lookup", "test")
+REGISTER_HEARTBEAT_SECONDS = 60  # 관리자 화면이 이 시간 동안 소식이 없으면(창을 닫았으면) 카메라를 끈다
 
 
 class AttendanceEngine:
@@ -52,6 +54,8 @@ class AttendanceEngine:
         self.ai_failed = False
         self.camera_on = False
         self.camera_error = False
+        self.camera_reopen = False      # True면 캡처 스레드가 카메라를 닫고 camera.txt의 번호로 다시 연다
+        self.cached_faces = []          # 마지막 인식 결과 [(bbox, embedding)] — 학생 등록에 쓴다
         self.camera_generation = 0      # 카메라를 켜고 끌 때마다 1씩 증가 — 이전 세션의 늦은 인식 결과를 버린다
         self.latest_frame = None
         self.frame_seq = 0
@@ -127,6 +131,8 @@ class AttendanceEngine:
                 limit = core.TEST_TIMEOUT
             elif self.mode in ("result", "stats"):
                 limit = core.timeouts[self.mode]
+            elif self.mode == "register":
+                limit = REGISTER_HEARTBEAT_SECONDS
             else:
                 limit = None
             return {
@@ -148,6 +154,8 @@ class AttendanceEngine:
         if mode == "attendance" and action not in ("CHECK_IN", "CHECK_OUT"):
             raise ValueError(action)
         with self._lock:
+            if self.mode == "register":
+                raise RuntimeError("관리자가 학생을 등록하는 중입니다.")
             self.mode = mode
             self.pending_action = action if mode == "attendance" else None
             self.session_started = time.time()
@@ -163,6 +171,62 @@ class AttendanceEngine:
     def go_idle(self):
         with self._lock:
             self._enter("idle", None)
+
+    def keep_register_camera(self):
+        """
+        관리자 [학생 등록] 탭이 열려 있는 동안 주기적으로 부른다. 처음이면 카메라를 켜고,
+        이미 켜져 있으면 꺼지기까지 남은 시간만 늘린다 (탭을 닫으면 REGISTER_HEARTBEAT_SECONDS 뒤 꺼진다).
+        """
+        with self._lock:
+            if self.mode == "register":
+                self.session_started = time.time()
+                return
+            self.mode = "register"
+            self.pending_action = None
+            self.payload = None
+            self.session_started = time.time()
+            self._reset_liveness()
+            self.card = {}
+            self._set_card("loading" if not self.ai_ready else "search",
+                           "얼굴 인식 준비 중.." if not self.ai_ready else "얼굴을 찾는 중..")
+            self._set_camera(True)
+            self._changed()
+
+    def stop_register_camera(self):
+        with self._lock:
+            if self.mode == "register":
+                self._enter("idle", None)
+
+    def reopen_camera(self):
+        """관리자 화면에서 카메라 번호를 바꿨다 — 캡처 스레드가 닫고 camera.txt의 번호로 다시 연다."""
+        core.ACTIVE_CAMERA_INDEX = None  # 새로 연결될 때까지 이전 번호를 보여주지 않는다
+        self.camera_reopen = True
+
+    def register_student(self, student_id, name, major, phone, grade):
+        """
+        지금 카메라 앞의 얼굴로 학생을 등록한다. 등록하지 못하면 안내 문구를 담은 ValueError.
+        사진으로 학생이 등록되면 이후 출석도 사진으로 뚫리므로 등록할 때도 사람인지 확인한다.
+        """
+        student_id, name = str(student_id or "").strip(), str(name or "").strip()
+        if not (student_id and name):
+            raise ValueError("학번과 이름을 입력하세요.")
+        with self._lock:
+            if self.mode != "register" or not self.cached_faces:
+                raise ValueError("카메라 영역에 등록할 학생의 얼굴이 감지되지 않았습니다.")
+            if not self.passes_antispoof():
+                raise ValueError(self.liveness_reject_message())
+            if not self.has_recent_blink():
+                raise ValueError("사람 얼굴이 아닌 것으로 보입니다.\n"
+                                 "등록할 학생이 카메라를 바라보고 눈을 천천히 감았다 뜬 뒤 다시 눌러주세요.")
+            embedding = np.asarray(self.cached_faces[0][1], dtype=np.float32)
+            dup = core.find_duplicate_face(embedding, self.enrolled_users, self.embed_matrix)
+        if dup:
+            raise ValueError("이미 등록된 얼굴과 유사도가 높습니다.\n"
+                             f"기존 등록자: {dup['name']} ({dup['user_id']})\n"
+                             "동일 인물로 판단되어 등록을 진행하지 않습니다.")
+        core.insert_student(student_id, name, str(major or "").strip() or core.DEPARTMENT_NAME,
+                            str(phone or "").strip(), grade, embedding)
+        self.reload_users()
 
     def _enter(self, mode, payload):
         """세션이 끝나 결과 / 출석 현황 / 메인 화면으로 넘어간다 — 카메라는 끈다."""
@@ -182,6 +246,7 @@ class AttendanceEngine:
         self.camera_on = on
         self.latest_frame = None
         self.face_labels = []
+        self.cached_faces = []  # 꺼지거나 새로 켜면 예전 얼굴로 출결/등록이 되지 않게 비운다
         if on:
             self.camera_error = False
 
@@ -200,6 +265,12 @@ class AttendanceEngine:
         last_frame_time = 0.0
         while self.is_running:
             try:
+                if self.camera_reopen:
+                    self.camera_reopen = False
+                    if cap is not None:
+                        cap.release()
+                        cap = None
+
                 if not self.camera_on:
                     if cap is not None:
                         cap.release()
@@ -251,7 +322,7 @@ class AttendanceEngine:
             self.face_conn.recv()  # 모델 로딩 완료 신호
             with self._lock:
                 self.ai_ready = True
-                if self.mode in SESSION_MODES and self.card.get("state") == "loading":
+                if self.card.get("state") == "loading":
                     self._set_card("search", "얼굴을 찾는 중..")
                 self._changed()
             last_seq = -1
@@ -273,11 +344,14 @@ class AttendanceEngine:
                     # 분석하는 사이에 카메라를 껐다 켰다면(다음 사람) 예전 얼굴 결과는 버린다
                     if not (self.camera_on and generation == self.camera_generation):
                         continue
+                    self.cached_faces = results
                     self._update_blink_state(blink_score)
                     self._update_liveness_state(liveness)
                     matched_user, best_sim = self._match_faces(results, seq)
                     if self.mode in ("attendance", "lookup"):
                         self._process_attendance(frame, results, matched_user)
+                    elif self.mode == "register":
+                        self._process_register(results, matched_user)
                     elif self.mode == "test":
                         self._process_camera_test(results, matched_user, best_sim)
         except (EOFError, OSError):
@@ -358,6 +432,27 @@ class AttendanceEngine:
         if not self.antispoof_enabled:
             return True
         return (time.time() - self.last_live_time) <= core.LIVENESS_VALID_SECONDS
+
+    def liveness_reject_message(self):
+        """위조판별에서 막혔을 때 보여줄 안내 문구."""
+        if (time.time() - self.last_fake_time) <= core.LIVENESS_VALID_SECONDS:
+            return "사진이나 화면으로 판단됩니다.\n본인이 직접 카메라 앞에 서서 다시 시도해주세요."
+        if self.last_liveness_status == "input_rejected":
+            return "얼굴이 너무 크게 잡혀 확인할 수 없습니다.\n카메라에서 조금 물러난 뒤 다시 시도해주세요."
+        return "본인 확인을 하지 못했습니다.\n카메라를 정면으로 바라본 뒤 다시 시도해주세요."
+
+    def _process_register(self, faces, matched_user):
+        """[학생 등록] 탭에 지금 [얼굴 등록]을 눌러도 되는지 알려준다."""
+        if not faces:
+            self._set_card("search", "얼굴을 찾는 중..")
+        elif matched_user is not None:
+            self._set_card("warn", "이미 등록된 얼굴입니다", f"{self._display_name(matched_user)} 학생")
+        elif not self.passes_antispoof():
+            self._set_card("error", "사람 확인이 안 됩니다", self.liveness_reject_message())
+        elif not self.has_recent_blink():
+            self._set_card("blink", "눈을 천천히 감았다 떠 주세요", "깜빡임이 확인되면 등록할 수 있습니다")
+        else:
+            self._set_card("ok", "등록할 수 있습니다", "[얼굴 등록]을 눌러 주세요")
 
     def _process_attendance(self, frame, faces, matched_user):
         """

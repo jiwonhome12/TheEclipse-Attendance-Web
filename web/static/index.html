@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>창의공간 출석체크</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -19,6 +20,7 @@
       <span id="clock" class="clock"></span>
       <button class="ghost" data-action="test">카메라 테스트</button>
       <button class="ghost" data-action="lookup">출석 조회</button>
+      <a class="ghost" href="/admin">관리자</a>
     </div>
   </header>
 
@@ -92,6 +94,13 @@
         <span id="stats-remaining" class="remaining"></span>
         <button class="primary" data-action="home">처음으로</button>
       </div>
+    </section>
+
+    <!-- 관리자가 [학생 등록] 탭에서 카메라를 쓰는 중 -->
+    <section id="view-busy" class="view card" hidden>
+      <div class="visual warn">!</div>
+      <h2>관리자가 학생을 등록하는 중입니다</h2>
+      <p class="detail">등록이 끝나면 출근 · 퇴근을 다시 할 수 있습니다</p>
     </section>
 
     <!-- 카메라 테스트: 영상 + 인식 결과 -->

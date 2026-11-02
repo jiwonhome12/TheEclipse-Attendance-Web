@@ -19,15 +19,12 @@ import contextlib
 import cv2
 import io
 import numpy as np
-import threading
 import time
 import sqlite3
 import json
 import shutil
 import sys
-import multiprocessing
 import calendar
-import math
 from datetime import date, datetime, timedelta
 from PIL import ImageFont
 
@@ -1303,3 +1300,285 @@ def log_attendance(user_id, name, log_type, frame=None):
                       "단, 00:00~06:00 사이 출퇴근은 출석 일수와 시간에 인정되지 않습니다.")
     return True, f"기록 시각 {now_time}"
 
+
+# ==========================================
+# 3. 관리자 기능 — tkinter 관리자 화면과 웹 관리자 화면이 같이 쓴다
+# ==========================================
+# 출결로그 조회 조건 — (키, 이름). 아무것도 안 고르면 "custom"(기간 내역)
+LOG_FILTER_MODES = [
+    ("week_days", f"주 {WEEKLY_REQUIRED_DAYS}회 이상 출석"),
+    ("week_hours", f"주 {WEEKLY_REQUIRED_SECONDS // 3600}시간 이상 출석"),
+    ("month", "월 단위"),
+    ("recent7_sum", "최근 7일 합계"),
+]
+LOG_SUMMARY_MODES = {"recent7_sum", "week_days", "week_hours"}
+
+
+def check_admin_login(user_id, password):
+    """관리자 로그인 확인. "ok" / "wrong"(아이디·비밀번호 틀림) / "not_admin"(학생 계정)."""
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute("SELECT role FROM users WHERE user_id = ? AND password = ?", (user_id, password)).fetchone()
+    conn.close()
+    if not row:
+        return "wrong"
+    return "ok" if row[0] == "admin" else "not_admin"
+
+
+def log_period(mode, start, end, today=None):
+    """
+    조회 조건의 실제 조회 기간 (시작일, 종료일).
+    최근 7일은 오늘까지 7일, 월 단위는 start가 속한 달, 주 단위는 start가 속한 월~일, 나머지는 start~end.
+    """
+    today = today or date.today()
+    if mode == "recent7_sum":
+        return today - timedelta(days=6), today
+    if mode == "month":
+        last_day = calendar.monthrange(start.year, start.month)[1]
+        return start.replace(day=1), start.replace(day=last_day)
+    if mode in ("week_days", "week_hours"):
+        monday = start - timedelta(days=start.weekday())
+        return monday, monday + timedelta(days=6)
+    return (start, end) if start <= end else (end, start)
+
+
+def query_log_rows(start, end, keyword=""):
+    """기간 안의 출근/퇴근 기록 (최근 것이 먼저). keyword는 이름 또는 학번 일부."""
+    query = """
+        SELECT a.user_id, a.name, a.log_type, a.log_date, a.log_time, a.photo_path, u.penalty
+        FROM attendance_logs a
+        LEFT JOIN users u ON u.user_id = a.user_id
+        WHERE a.log_date BETWEEN ? AND ?
+    """
+    params = [start.isoformat(), end.isoformat()]
+    if keyword:
+        query += " AND (a.name LIKE ? OR a.user_id LIKE ?)"
+        params += [f"%{keyword}%", f"%{keyword}%"]
+    query += " ORDER BY a.log_date DESC, a.log_time DESC"
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    keys = ("user_id", "name", "log_type", "log_date", "log_time", "photo_path", "penalty")
+    # 00:00~06:00 기록(valid=False)은 일수/시간 계산에서 빠진다
+    return [dict(zip(keys, row), valid=is_valid_attendance_time(row[4])) for row in rows]
+
+
+def query_log_summary(mode, start, end, keyword=""):
+    """
+    학생별 출근 일수·인정 시간 합계. 주 단위 조건이면 기준(주 3일 / 20시간)을 채운 학생만 남긴다.
+    기준은 학생 화면의 주간 현황과 같다.
+    """
+    summary = get_attendance_summary_by_student(start.isoformat(), end.isoformat())
+    if keyword:
+        summary = [s for s in summary if keyword in s["name"] or keyword in s["user_id"]]
+    if mode == "week_days":
+        summary = [s for s in summary if s["days"] >= WEEKLY_REQUIRED_DAYS]
+        summary.sort(key=lambda s: (-s["days"], -s["seconds"], s["name"]))
+    elif mode == "week_hours":
+        summary = [s for s in summary if s["seconds"] >= WEEKLY_REQUIRED_SECONDS]
+        summary.sort(key=lambda s: (-s["seconds"], -s["days"], s["name"]))
+    else:
+        summary.sort(key=lambda s: (-s["seconds"], -s["days"], s["name"]))
+    return summary
+
+
+def list_students():
+    """등록된 학생 목록 (학번, 이름, 전공, 패널티, 전화번호, 학년)."""
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("SELECT user_id, name, major, penalty, phone, grade FROM users WHERE role = 'student'").fetchall()
+    conn.close()
+    return rows
+
+
+def update_student(student_id, name, major, penalty, phone, grade):
+    """학생 정보를 고친다. 입력이 잘못됐으면 안내 문구를 담은 ValueError."""
+    name, major, phone, grade = (str(v or "").strip() for v in (name, major, phone, grade))
+    penalty = str(penalty if penalty is not None else "").strip()
+    # 전화번호·학년은 아직 모르는 학생도 있어서 비워둘 수 있다
+    if not (name and major and penalty):
+        raise ValueError("이름, 전공, 패널티는 꼭 입력하세요.")
+    try:
+        penalty = int(penalty)
+    except ValueError:
+        raise ValueError("패널티는 정수형만 입력 가능합니다.") from None
+    if grade and not grade.isdigit():
+        raise ValueError("학년은 숫자만 입력 가능합니다.")
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE users SET name = ?, major = ?, penalty = ?, phone = ?, grade = ? WHERE user_id = ?",
+                 (name, major, penalty, phone, grade, student_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_students(student_ids):
+    """학생들과 그 학생들의 출결 기록·출퇴근 사진을 지운다."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    photo_paths = []
+    for student_id in student_ids:
+        # SQLite 타입 유연성을 고려하여 문자열 및 정수형 모두 삭제 쿼리 반영
+        alt_id = int(student_id) if str(student_id).isdigit() else student_id
+        cursor.execute("SELECT photo_path FROM attendance_logs WHERE user_id = ? OR user_id = ?",
+                       (str(student_id), alt_id))
+        photo_paths += [row[0] for row in cursor.fetchall()]
+        # 관리자 계정은 학생 목록에 없으므로 학생만 지운다
+        cursor.execute("DELETE FROM users WHERE (user_id = ? OR user_id = ?) AND role = 'student'",
+                       (str(student_id), alt_id))
+        cursor.execute("DELETE FROM attendance_logs WHERE user_id = ? OR user_id = ?", (str(student_id), alt_id))
+    conn.commit()
+    conn.close()
+    delete_photo_files(photo_paths)
+
+
+def find_duplicate_face(embedding, enrolled_users, embed_matrix):
+    """
+    새로 등록하려는 얼굴이 기존 등록자와 같은 사람으로 보이면 그 학생, 아니면 None.
+    인식 화면과 같은 코사인 유사도 THRESHOLD를 기준으로 삼는다. embed_matrix는 행마다 정규화된 임베딩.
+    """
+    if not enrolled_users or embed_matrix is None or len(embed_matrix) == 0:
+        return None
+    norm = np.linalg.norm(embedding)
+    if norm == 0:
+        return None
+    sims = embed_matrix @ (embedding / norm)
+    best_idx = int(np.argmax(sims))
+    return enrolled_users[best_idx] if float(sims[best_idx]) >= THRESHOLD else None
+
+
+def insert_student(student_id, name, major, phone, grade, embedding):
+    """얼굴 임베딩과 함께 학생을 등록한다. 이미 있는 학번이면 ValueError."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        if conn.execute("SELECT id FROM users WHERE user_id = ?", (student_id,)).fetchone():
+            raise ValueError("이미 가입된 학번 ID입니다.")
+        conn.execute("""
+            INSERT INTO users (user_id, name, major, role, embedding, penalty, phone, grade)
+            VALUES (?, ?, ?, 'student', ?, 0, ?, ?)
+        """, (student_id, name, major or DEPARTMENT_NAME, np.asarray(embedding, dtype=np.float32).tobytes(),
+              phone, normalize_grade(grade)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def fill_blank_contacts_from_roster(roster):
+    """
+    이미 등록된 학생 중 전화번호·학년이 비어 있으면 명단(구글폼 응답) 값으로 채운다.
+    관리자가 직접 입력한 값은 덮어쓰지 않는다. 바뀐 학생 수를 돌려준다.
+    """
+    by_id = {str(s.get("StudentId", "")).strip(): s for s in roster}
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, phone, grade FROM users WHERE role = 'student' AND (phone = '' OR grade = '')")
+    changed = 0
+    for user_id, phone, grade in cursor.fetchall():
+        student = by_id.get(str(user_id))
+        if not student:
+            continue
+        new_phone = phone or str(student.get("Phone") or "").strip()
+        new_grade = grade or normalize_grade(student.get("Grade"))
+        if (new_phone, new_grade) != (phone, grade):
+            cursor.execute("UPDATE users SET phone = ?, grade = ? WHERE user_id = ?", (new_phone, new_grade, user_id))
+            changed += 1
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def unregistered_roster(roster):
+    """명단에서 아직 얼굴 등록이 안 된 학생만 (학생 등록 목록에 보여줄 것)."""
+    conn = sqlite3.connect(DB_PATH)
+    registered = {str(row[0]) for row in conn.execute("SELECT user_id FROM users WHERE role = 'student'")}
+    conn.close()
+    result = []
+    for student in roster:
+        sid = str(student.get("StudentId", "")).strip()
+        if sid and sid not in registered:
+            result.append(student)
+    return result
+
+
+def roster_error_message(error):
+    """명단을 못 읽었을 때 관리자에게 보여줄 안내 문구 (원인별로 고치는 방법까지)."""
+    import urllib.error
+    if isinstance(error, SheetsApiError):
+        if error.status == 403 and "has not been used" in error.detail:
+            return ("Google Cloud 프로젝트에서 Google Sheets API가 꺼져 있습니다.\n"
+                    "Cloud 콘솔 → API 및 서비스 → 라이브러리에서 'Google Sheets API'를 사용 설정해주세요.\n\n"
+                    f"{error.detail}")
+        if error.status in (403, 404):
+            email = google_service_account_email() or "(키 파일의 서비스 계정 이메일)"
+            return ("응답 시트를 읽을 권한이 없거나 시트를 찾지 못했습니다.\n"
+                    f"응답 시트의 [공유]에서 아래 이메일을 '뷰어'로 추가해주세요.\n\n{email}\n\n"
+                    f"({error.status}: {error.detail})")
+        return f"구글 시트를 읽지 못했습니다.\n\n{error.status}: {error.detail}"
+    if isinstance(error, FileNotFoundError) and error.filename == GOOGLE_KEY_PATH:
+        return ("서비스 계정 키 파일이 없습니다.\n"
+                "[설정] 탭의 '서비스 계정 키'에서 Google Cloud에서 받은 JSON 키 파일을 골라주세요.")
+    if isinstance(error, FileNotFoundError):
+        return ("roster.json 파일을 찾을 수 없습니다.\n"
+                "[설정] 탭에 구글폼 응답 주소를 넣거나, 창공시스템을 먼저 실행해서 학생을 등록해주세요.\n\n"
+                f"찾아본 위치:\n{ROSTER_PATH}")
+    if isinstance(error, json.JSONDecodeError):
+        return (f"roster.json 파일의 형식이 올바르지 않습니다 (JSON 오류: {error}).\n"
+                "창공시스템 쪽에서 파일이 다 써지는 중에 읽었을 수도 있으니 잠시 후 다시 시도해주세요.")
+    if isinstance(error, (urllib.error.URLError, OSError)) or type(error).__module__.startswith(
+            ("requests", "google.auth")):
+        return ("구글폼 응답을 불러오지 못했습니다.\n"
+                f"인터넷 연결과 [설정] 탭의 구글폼 응답 주소를 확인해주세요.\n\n{error}")
+    return f"명단을 불러오는 중 오류가 발생했습니다.\n\n{error}"
+
+
+def attendance_workbook():
+    """
+    출석 기록 전체를 출근→퇴근 한 쌍씩 한 행으로 묶은 엑셀 통합문서와 행 수. 기록이 없으면 (None, 0).
+    DB는 읽기만 한다. openpyxl이 없으면 ImportError.
+    """
+    import openpyxl
+    from openpyxl.styles import Font, Alignment, PatternFill
+
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("""
+        SELECT user_id, name, log_date, log_type, log_time
+        FROM attendance_logs
+        ORDER BY log_date ASC, name ASC, log_time ASC
+    """).fetchall()
+    conn.close()
+
+    # 출근→퇴근 한 쌍을 한 행으로 묶는다 (attendance.json 내보내기와 같은 방식, 하루 여러 번이면 여러 행)
+    records = sorted(
+        pair_attendance_sessions(rows),
+        key=lambda r: (r["date"], r["name"] or "", r["check_in"] or r["check_out"] or ""),
+    )
+    if not records:
+        return None, 0
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "출석기록"
+    headers = ["학번", "이름", "날짜", "출근시간", "퇴근시간", "근무시간(시간)", "비고"]
+    ws.append(headers)
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    for rec in records:
+        check_in, check_out = rec["check_in"], rec["check_out"]
+        seconds = session_seconds(rec)
+        work_hours = round(seconds / 3600.0, 2) if seconds > 0 else ""
+        if check_in and check_out:
+            note = "정상 출퇴근"
+        elif check_in:
+            note = "퇴근 기록 없음"
+        elif check_out:
+            note = "출근 기록 없음"
+        else:
+            note = "결석"
+        ws.append([rec["user_id"], rec["name"], rec["date"], check_in or "-", check_out or "-", work_hours, note])
+
+    for col_idx, width in enumerate([12, 10, 12, 10, 10, 14, 14], start=1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = width
+    return wb, len(records)

@@ -2,9 +2,10 @@
 웹 버전 출석체크 서버. 키오스크 PC(또는 라즈베리파이)에서 띄우고 브라우저로 http://127.0.0.1:8000 을 연다.
 
     python web/server.py                 # 이 PC에서만 접속
-    python web/server.py --host 0.0.0.0  # 같은 와이파이의 다른 기기에서도 접속 (관리자 로그인이 생긴 뒤에 쓴다)
+    python web/server.py --host 0.0.0.0  # 같은 와이파이의 다른 기기에서도 관리자 화면(/admin)에 접속
 
 카메라와 얼굴 인식은 서버(이 PC)에서 돌고, 브라우저는 /ws로 상태를 받아 화면만 그린다.
+관리자 화면은 http://127.0.0.1:8000/admin (기본 계정 1234 / 1234 — 운영 전에 꼭 바꾼다).
 """
 import argparse
 import asyncio
@@ -17,10 +18,12 @@ from contextlib import asynccontextmanager
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import core  # noqa: E402
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect  # noqa: E402
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect  # noqa: E402
 from fastapi.responses import FileResponse, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
+
+import admin_api  # noqa: E402
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 VIDEO_FPS = 10 if core.LOW_POWER else 20  # 브라우저로 보내는 영상의 초당 장수
@@ -33,6 +36,7 @@ async def lifespan(_app):
     global engine
     from engine import AttendanceEngine
     engine = AttendanceEngine()
+    _app.state.engine = engine  # 관리자 API(admin_api.py)가 쓴다
     yield
     engine.close()
 
@@ -40,11 +44,17 @@ async def lifespan(_app):
 app = FastAPI(title="창의공간 출석체크", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/assets", StaticFiles(directory=os.path.join(core.RESOURCE_DIR, "assets")), name="assets")
+app.include_router(admin_api.router)
 
 
 @app.get("/")
 def index():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
+@app.get("/admin")
+def admin_page():
+    return FileResponse(os.path.join(STATIC_DIR, "admin.html"))
 
 
 @app.get("/api/state")
@@ -63,12 +73,15 @@ def start_session(req: SessionRequest):
         engine.start_session(req.mode, req.action)
     except ValueError:
         raise HTTPException(400, "mode는 attendance/lookup/test, action은 CHECK_IN/CHECK_OUT 이어야 합니다.")
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
     return engine.state()
 
 
 @app.post("/api/idle")
 def go_idle():
-    engine.go_idle()
+    if engine.state()["mode"] != "register":  # 관리자가 등록 중인 카메라는 키오스크에서 끄지 않는다
+        engine.go_idle()
     return engine.state()
 
 
@@ -89,8 +102,14 @@ async def ws_state(ws: WebSocket):
 
 
 @app.get("/video.mjpg")
-async def video():
-    """카메라 화면(얼굴 상자·이름 포함)을 MJPEG로 보낸다. <img src="/video.mjpg">로 바로 볼 수 있다."""
+async def video(request: Request):
+    """
+    카메라 화면(얼굴 상자·이름 포함)을 MJPEG로 보낸다. <img src="/video.mjpg">로 바로 볼 수 있다.
+    학생 얼굴이 보이므로 이 PC(키오스크)에서 열었거나 관리자로 로그인한 경우에만 보낸다.
+    """
+    if request.client.host not in ("127.0.0.1", "::1") and admin_api.admin_session(request) is None:
+        raise HTTPException(403, "카메라 화면은 키오스크 PC나 관리자 로그인 후에만 볼 수 있습니다.")
+
     async def frames():
         last_seq = -1
         while True:

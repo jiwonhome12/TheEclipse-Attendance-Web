@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>출석체크 관리자</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body class="admin">
+  <header class="topbar">
+    <a class="brand" href="/">
+      <span class="logo">E</span>
+      <span>
+        <strong>창의공간 출석체크 관리자</strong>
+        <small id="admin-who">관리자 로그인이 필요합니다</small>
+      </span>
+    </a>
+    <nav id="tabs" class="tabs" hidden>
+      <button data-tab="students" class="tab">학생 현황/수정</button>
+      <button data-tab="register" class="tab">학생 등록</button>
+      <button data-tab="logs" class="tab">전체 출결로그</button>
+      <button data-tab="settings" class="tab">설정</button>
+    </nav>
+    <div class="top-right">
+      <a class="ghost" href="/">출석 화면</a>
+      <button id="btn-logout" class="ghost" hidden>로그아웃</button>
+    </div>
+  </header>
+
+  <main class="admin-main">
+    <!-- 로그인 -->
+    <form id="login" class="card login" hidden>
+      <h2>관리자 로그인</h2>
+      <label>아이디<input id="login-id" autocomplete="username" required></label>
+      <label>비밀번호<input id="login-pw" type="password" autocomplete="current-password" required></label>
+      <p id="login-error" class="error-text"></p>
+      <button class="primary wide" type="submit">로그인</button>
+    </form>
+
+    <!-- 학생 현황/수정 -->
+    <section id="tab-students" class="tab-page" hidden>
+      <div class="card list-card">
+        <div class="card-head">
+          <div>
+            <h3>학생 리스트</h3>
+            <small id="student-count" class="muted"></small>
+          </div>
+          <div class="head-actions">
+            <a class="ghost" href="/api/admin/export.xlsx" id="btn-export">엑셀 저장</a>
+            <button class="ghost danger" id="btn-delete">선택 삭제</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th class="check"><input type="checkbox" id="check-all" aria-label="모두 선택"></th>
+                <th>학번</th><th>이름</th><th>전공</th><th>패널티</th><th>전화 번호</th><th>학년</th>
+              </tr>
+            </thead>
+            <tbody id="student-rows"></tbody>
+          </table>
+        </div>
+      </div>
+      <form id="edit-form" class="card side-card">
+        <h3>학생 데이터 편집</h3>
+        <small class="muted">목록에서 학생을 고르면 여기서 고칠 수 있습니다</small>
+        <div class="form-grid">
+          <label>학번<input name="user_id" readonly></label>
+          <label>이름<input name="name"></label>
+          <label class="span2">전공<input name="major"></label>
+          <label>전화번호<input name="phone"></label>
+          <label>학년<input name="grade" inputmode="numeric"></label>
+          <label>패널티<input name="penalty" inputmode="numeric"></label>
+        </div>
+        <button class="primary wide" type="submit">수정 완료</button>
+      </form>
+    </section>
+
+    <!-- 학생 등록 -->
+    <section id="tab-register" class="tab-page" hidden>
+      <div class="register-camera">
+        <div class="video-box">
+          <img id="register-video" alt="카메라 화면">
+        </div>
+        <div class="register-status">
+          <div id="register-visual" class="visual small"></div>
+          <div>
+            <strong id="register-title"></strong>
+            <p id="register-detail" class="muted"></p>
+          </div>
+        </div>
+      </div>
+      <form id="register-form" class="card side-card">
+        <h3>학생 얼굴 및 상세 정보 등록</h3>
+        <small class="muted">명단에서 학생을 고르고, 카메라를 바라본 채 눈을 한 번 깜빡인 뒤 등록하세요.</small>
+        <label class="span2">구글폼 학생 명단
+          <span class="row">
+            <select id="roster-select"><option value="">명단을 불러오는 중...</option></select>
+            <button type="button" class="ghost" id="btn-roster">새로고침</button>
+          </span>
+        </label>
+        <small id="roster-status" class="muted"></small>
+        <hr>
+        <div class="form-grid">
+          <label>학번<input name="user_id" required></label>
+          <label>이름<input name="name" required></label>
+          <label>전공<input name="major"></label>
+          <label>전화번호<input name="phone"></label>
+          <label>학년<input name="grade" inputmode="numeric"></label>
+        </div>
+        <button class="primary wide big" type="submit">얼굴 등록</button>
+      </form>
+    </section>
+
+    <!-- 전체 출결로그 -->
+    <section id="tab-logs" class="tab-page" hidden>
+      <div class="card list-card">
+        <div class="card-head">
+          <div>
+            <h3>출결 기록</h3>
+            <small id="log-subtitle" class="muted">출근 · 퇴근이 찍힌 순서대로, 최근 기록이 위에 나옵니다</small>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead id="log-head"></thead>
+            <tbody id="log-rows"></tbody>
+          </table>
+        </div>
+      </div>
+      <form id="log-form" class="card side-card">
+        <h3>조회 조건</h3>
+        <small class="muted">기간과 조건을 고르고 [조회]를 누르세요</small>
+        <label><span id="log-date-label">기간</span>
+          <span class="row" id="log-dates">
+            <input type="date" id="log-start">
+            <span id="log-tilde">~</span>
+            <input type="date" id="log-end">
+            <span id="log-fixed" class="muted" hidden>오늘까지 최근 7일</span>
+          </span>
+        </label>
+        <label>이름 / 학번<input id="log-keyword"></label>
+        <span class="field-label">조건 — 주 단위는 월~일 기준, 학생별로 합칩니다 (다시 누르면 해제)</span>
+        <div class="chips" id="log-modes"></div>
+        <button class="primary wide" type="submit">조회</button>
+        <p id="log-result" class="log-result"></p>
+        <small class="muted" id="log-photo-note"></small>
+      </form>
+    </section>
+
+    <!-- 설정 -->
+    <section id="tab-settings" class="tab-page" hidden>
+      <div class="card">
+        <h3>메인 화면 복귀 시간</h3>
+        <small class="muted" id="timeout-desc"></small>
+        <div id="timeouts"></div>
+      </div>
+      <div class="card">
+        <h3>장치 · 학생 명단</h3>
+        <small class="muted">고르면 바로 저장되고 반영됩니다.</small>
+        <div class="setting-row">
+          <div><strong>카메라 장치</strong><small>외장 USB 카메라는 보통 1번</small></div>
+          <select id="camera-select"></select>
+        </div>
+        <small id="camera-info" class="muted right"></small>
+        <div class="setting-row">
+          <div><strong>서비스 계정 키</strong><small id="key-email"></small></div>
+          <label class="ghost file-btn">키 파일 선택<input type="file" id="key-file" accept=".json,application/json" hidden></label>
+        </div>
+        <div class="setting-row">
+          <div><strong>구글폼 학생 명단 주소</strong><small>응답 시트 주소(실시간) 또는 CSV로 게시한 주소</small></div>
+          <button class="ghost" id="btn-form-url">저장</button>
+        </div>
+        <input id="form-url" class="wide-input" placeholder="https://docs.google.com/spreadsheets/d/...">
+        <small class="muted">시트 주소를 넣으면 Sheets API로 실시간으로 읽고, 비워 두면 창공시스템 명단(roster.json)을 씁니다.</small>
+      </div>
+    </section>
+  </main>
+
+  <!-- 사진 보기 -->
+  <dialog id="photo-dialog">
+    <img id="photo-img" alt="출퇴근 사진">
+    <p id="photo-caption"></p>
+    <form method="dialog"><button class="primary">닫기</button></form>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="/static/admin.js"></script>
+</body>
+</html>

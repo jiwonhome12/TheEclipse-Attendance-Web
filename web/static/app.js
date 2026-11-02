@@ -2,7 +2,7 @@
 // 여기서는 버튼을 누르면 서버에 알리기만 한다.
 const $ = (id) => document.getElementById(id);
 const VIEWS = { idle: "view-idle", attendance: "view-verify", lookup: "view-verify",
-                result: "view-result", stats: "view-stats", test: "view-test" };
+                result: "view-result", stats: "view-stats", test: "view-test", register: "view-busy" };
 const ACTION_NAME = { CHECK_IN: "출근", CHECK_OUT: "퇴근" };
 
 let state = null;

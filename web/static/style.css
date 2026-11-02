@@ -82,6 +82,7 @@ button {
 }
 .ghost { background: var(--blue-soft); color: var(--blue); }
 .ghost:hover { background: #D3DDF2; }
+a.ghost { text-decoration: none; }
 .primary { background: var(--blue); color: #fff; }
 .primary:hover { background: var(--blue-dark); }
 

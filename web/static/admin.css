@@ -1,0 +1,164 @@
+/* 관리자 화면 — 색과 버튼은 style.css를 그대로 쓰고, 표·입력칸·탭만 더한다 */
+body.admin { user-select: text; }
+
+a.ghost, a.brand { text-decoration: none; color: inherit; }
+a.ghost { color: var(--blue); }
+
+.tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+.tab {
+  padding: 10px 18px;
+  border-radius: 12px;
+  font-weight: 700;
+  color: var(--text-sub);
+  background: var(--panel-alt);
+}
+.tab.active { background: var(--blue); color: #fff; }
+
+/* style.css의 main은 가운데 정렬(place-items: center)이라 관리자 화면에서는 꽉 채운다 */
+.admin-main { display: block; place-items: stretch; padding: 8px 32px 32px; }
+
+.tab-page {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 460px;
+  gap: 20px;
+  align-items: start;
+}
+#tab-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+.admin .card { text-align: left; padding: 28px; }
+.admin .card h3 { margin: 0 0 4px; font-size: 22px; }
+
+.card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 16px; }
+.head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.danger { color: var(--err); background: #F8E5E3; }
+.danger:hover { background: #F2D3CF; }
+
+/* ---------- 로그인 ---------- */
+.login { max-width: 420px; margin: 60px auto; display: flex; flex-direction: column; gap: 14px; }
+.login h2 { margin: 0 0 8px; }
+
+/* ---------- 입력칸 ---------- */
+label, .field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+}
+input, select {
+  font: inherit;
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--text);
+  background: #fff;
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+input:focus, select:focus { outline: none; border-color: var(--blue); }
+input[readonly] { background: var(--panel-alt); color: var(--text-sub); }
+.wide-input { width: 100%; margin-top: 8px; }
+
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px; margin: 20px 0 22px; }
+.span2 { grid-column: span 2; }
+.row { display: flex; gap: 8px; align-items: center; }
+.row > input, .row > select { flex: 1; }
+.wide { width: 100%; }
+.big { padding: 16px; font-size: 18px; }
+.side-card { display: flex; flex-direction: column; gap: 10px; }
+.side-card hr { width: 100%; border: none; border-top: 1px solid var(--line); margin: 8px 0; }
+.error-text { color: var(--err); margin: 0; min-height: 1.2em; white-space: pre-line; }
+.right { display: block; text-align: right; }
+
+/* ---------- 표 ---------- */
+.table-wrap { max-height: calc(100vh - 260px); overflow: auto; }
+table.data { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+table.data th {
+  position: sticky;
+  top: 0;
+  background: var(--panel-alt);
+  color: var(--text-sub);
+  font-size: 13px;
+  padding: 12px 8px;
+  text-align: center;
+}
+table.data td { padding: 12px 8px; text-align: center; border-bottom: 1px solid var(--line); }
+table.data tbody tr { cursor: pointer; }
+table.data tbody tr:hover { background: #F5F4F0; }
+table.data tbody tr.selected { background: var(--blue-soft); color: var(--blue-dark); }
+table.data tr.invalid td { color: #94A3B8; }
+table.data .check { width: 48px; }
+table.data input[type="checkbox"] { width: 18px; height: 18px; }
+.has-photo::after { content: " 📷"; }
+
+/* ---------- 학생 등록 ---------- */
+.register-camera { display: flex; flex-direction: column; gap: 14px; }
+.register-camera .video-box { aspect-ratio: 4 / 3; min-height: 0; }
+.register-status {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px 18px;
+}
+.register-status p { margin: 4px 0 0; white-space: pre-line; }
+.visual.small { width: 56px; height: 56px; margin: 0; font-size: 26px; flex: none; }
+.visual.small.spin::after { width: 28px; height: 28px; border-width: 4px; }
+
+/* ---------- 출결로그 ---------- */
+.chips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.chip { padding: 12px; border-radius: 12px; font-weight: 700; background: var(--panel-alt); color: var(--text-sub); }
+.chip.on { background: var(--blue); color: #fff; }
+.log-result { font-weight: 700; white-space: pre-line; margin: 6px 0 0; }
+
+/* ---------- 설정 ---------- */
+.setting-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  background: var(--panel-alt);
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-top: 12px;
+}
+.setting-row strong { display: block; }
+.setting-row small { color: var(--text-sub); }
+.stepper { display: flex; align-items: center; gap: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 4px; }
+.stepper button { width: 40px; height: 36px; border-radius: 9px; font-size: 18px; font-weight: 800; color: var(--blue); }
+.stepper button:hover:not(:disabled) { background: var(--blue-soft); }
+.stepper button:disabled { color: var(--line); cursor: default; }
+.stepper span { min-width: 56px; text-align: center; font-weight: 800; }
+.file-btn { cursor: pointer; flex-direction: row; font-size: inherit; }
+
+/* ---------- 사진 / 알림 ---------- */
+dialog { border: none; border-radius: var(--radius); padding: 24px; text-align: center; }
+dialog::backdrop { background: rgba(17, 27, 48, 0.55); }
+dialog img { max-width: min(80vw, 640px); border-radius: 12px; display: block; }
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 32px;
+  transform: translateX(-50%);
+  max-width: min(90vw, 560px);
+  padding: 14px 20px;
+  border-radius: 14px;
+  background: var(--text);
+  color: #fff;
+  white-space: pre-line;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
+  z-index: 10;
+}
+.toast.error { background: var(--err); }
+
+@media (max-width: 1100px) {
+  .tab-page, #tab-settings { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .admin-main { padding-left: 16px; padding-right: 16px; }
+  .topbar { flex-wrap: wrap; }
+}
