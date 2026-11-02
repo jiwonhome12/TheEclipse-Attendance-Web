@@ -100,6 +100,7 @@ a.ghost { text-decoration: none; }
 main {
   flex: 1;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);  /* 내용이 넓어도 화면 밖으로 밀려나지 않게 */
   place-items: center;
   padding: 16px 32px 32px;
 }
@@ -137,44 +138,156 @@ main {
 }
 .remaining { color: var(--muted); font-variant-numeric: tabular-nums; }
 
-/* ---------- 메인 화면 ---------- */
-.greeting { text-align: center; font-size: 30px; margin: 0 0 32px; }
+/* ---------- 출석 화면 상단 (tkinter 시안과 같은 구성) ---------- */
+.kiosk-bar {
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  padding: 16px 36px;
+}
+.kiosk-bar svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.logo-tile {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: var(--blue-soft);
+  color: var(--blue);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.logo-tile svg {
+  width: 30px;
+  height: 30px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.brand-title { font-size: clamp(18px, 1.6vw, 26px); font-weight: 800; letter-spacing: -0.02em; word-break: keep-all; }
+
+.clock-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  border-radius: 14px;
+  background: var(--panel-alt);
+  font-weight: 800;
+  font-size: 18px;
+}
+.clock-pill svg { width: 20px; height: 20px; color: var(--text-sub); }
+.clock-pill .clock { margin: 0; color: var(--text); }
+
+.nav-link {
+  padding: 10px 16px;
+  border-radius: 12px;
+  color: var(--text-sub);
+  font-weight: 600;
+  text-decoration: none;
+}
+.nav-link:hover { background: var(--blue-soft); color: var(--blue); }
+
+/* ---------- 메인 화면: 출근 / 퇴근 카드 ---------- */
+.view.idle { max-width: 1680px; }
 
 .action-cards {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 28px;
+  gap: clamp(24px, 5vw, 96px);
+  padding: 0 clamp(0px, 4vw, 80px);
 }
 
 .action-card {
+  --fg: var(--text);
+  --accent: var(--blue);
+  --tile: var(--blue-soft);
+  position: relative;
+  min-height: clamp(320px, 50vh, 560px);
+  padding: clamp(28px, 3.2vw, 56px);
+  border-radius: 28px;
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 56px 32px;
+  border: 1.5px solid var(--blue-line, #C3D0EC);
+  color: var(--fg);
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  box-shadow: 0 10px 30px rgba(26, 34, 51, 0.06);
-  transition: transform 0.12s, box-shadow 0.12s;
+  text-align: left;
+  overflow: hidden;
+  box-shadow: 0 18px 40px rgba(26, 34, 51, 0.08);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
-.action-card:hover { transform: translateY(-3px); box-shadow: 0 16px 36px rgba(26, 34, 51, 0.1); }
-.action-card:active { transform: translateY(0); }
-
-.action-icon {
-  width: 96px;
-  height: 96px;
+.action-card.in {
+  --fg: #fff;
+  --accent: #fff;
+  --tile: rgba(255, 255, 255, 0.14);
+  background: var(--blue);
+  border-color: var(--blue);
+  box-shadow: 0 22px 44px rgba(31, 79, 191, 0.32);
+}
+/* 은은한 빛 — 파란 카드에 깊이감을 준다 */
+.action-card.in::before {
+  content: "";
+  position: absolute;
+  inset: -40% -20% auto auto;
+  width: 70%;
+  aspect-ratio: 1;
   border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255, 255, 255, 0.16), transparent);
+  pointer-events: none;
+}
+.action-card:hover { transform: translateY(-4px); box-shadow: 0 26px 50px rgba(26, 34, 51, 0.14); }
+.action-card.in:hover { box-shadow: 0 28px 54px rgba(31, 79, 191, 0.4); }
+.action-card:active { transform: translateY(0) scale(0.99); }
+.action-card:focus-visible { outline: 4px solid var(--blue-line, #C3D0EC); outline-offset: 4px; }
+
+.action-card svg { fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+
+.action-top { display: flex; justify-content: space-between; align-items: flex-start; }
+.action-icon {
+  width: clamp(72px, 6.5vw, 112px);
+  aspect-ratio: 1;
+  border-radius: 22px;
+  background: var(--tile);
+  color: var(--accent);
   display: grid;
   place-items: center;
-  font-size: 44px;
-  font-weight: 800;
-  color: #fff;
 }
-.action-card.in .action-icon { background: var(--blue); }
-.action-card.out .action-icon { background: #475569; }
-.action-title { font-size: 40px; font-weight: 800; }
-.action-sub { color: var(--muted); font-size: 16px; }
+.action-icon svg { width: 46%; height: 46%; }
+.action-tag {
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  font-size: clamp(14px, 1.2vw, 20px);
+  color: var(--accent);
+  opacity: 0.85;
+}
+.action-card.out .action-tag { color: var(--blue); opacity: 1; }
+
+.action-title {
+  margin: auto 0;
+  padding: 24px 0;
+  font-size: clamp(64px, 7.5vw, 128px);
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.action-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: clamp(16px, 2vw, 28px);
+  border-top: 1.5px solid color-mix(in srgb, var(--fg) 14%, transparent);
+  font-weight: 800;
+  font-size: clamp(18px, 1.6vw, 26px);
+  color: var(--accent);
+}
+.action-card.out .action-foot { color: var(--blue); }
+.action-foot svg { width: 1.6em; height: 1.6em; transition: transform 0.15s ease; }
+.action-card:hover .action-foot svg { transform: translateX(6px); }
+
+.idle-hint { text-align: center; color: var(--muted); font-size: 16px; margin: 36px 0 0; }
+.view.idle .ai-status { max-width: 640px; margin: 14px auto 0; text-align: center; }
 
 /* ---------- 상태 그림 ---------- */
 .visual {
@@ -205,6 +318,104 @@ main {
 .visual.error { background: #FBE2DF; color: var(--err); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- 고개 돌리기 안내 (turn-guide.js) ---------- */
+.turn-guide { margin: 20px auto 0; max-width: 520px; }
+.turn-guide svg { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+
+.tg-stage { display: flex; align-items: center; justify-content: center; gap: 20px; }
+.tg-head { width: 150px; height: 162px; flex: none; }
+.tg-skull { fill: var(--blue-soft); stroke: var(--blue); stroke-width: 3; }
+.tg-ear { fill: var(--blue-soft); stroke: var(--blue); stroke-width: 3; transition: opacity 0.3s; }
+.tg-face { stroke: var(--blue-dark); stroke-width: 3.5; }
+.tg-eye { fill: var(--blue-dark); stroke: none; }
+
+/* 얼굴(눈·코·입)을 옆으로 밀고 반대쪽 귀를 숨겨서 고개를 돌리는 모습을 보여준다 */
+.turn-guide[data-dir="left"] .tg-face { animation: tg-turn-left 1.8s ease-in-out infinite; }
+.turn-guide[data-dir="right"] .tg-face { animation: tg-turn-right 1.8s ease-in-out infinite; }
+.turn-guide[data-dir="left"] .tg-ear.l, .turn-guide[data-dir="right"] .tg-ear.r { animation: tg-ear-hide 1.8s ease-in-out infinite; }
+@keyframes tg-turn-left { 0%, 12% { transform: translateX(0); } 45%, 75% { transform: translateX(-17px); } 100% { transform: translateX(0); } }
+@keyframes tg-turn-right { 0%, 12% { transform: translateX(0); } 45%, 75% { transform: translateX(17px); } 100% { transform: translateX(0); } }
+@keyframes tg-ear-hide { 0%, 12% { opacity: 1; } 45%, 75% { opacity: 0; } 100% { opacity: 1; } }
+
+.tg-arrow {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--line);
+  transition: color 0.2s, background 0.2s;
+}
+.tg-arrow svg { width: 40px; height: 40px; stroke: currentColor; stroke-width: 3; }
+.turn-guide[data-dir="left"] .tg-arrow.left,
+.turn-guide[data-dir="right"] .tg-arrow.right {
+  color: #fff;
+  background: var(--blue);
+  animation: tg-nudge-left 1.8s ease-in-out infinite;
+}
+.turn-guide[data-dir="right"] .tg-arrow.right { animation-name: tg-nudge-right; }
+@keyframes tg-nudge-left { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(-8px); } }
+@keyframes tg-nudge-right { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(8px); } }
+
+.tg-steps { list-style: none; display: flex; justify-content: center; gap: 8px; padding: 0; margin: 18px 0 0; flex-wrap: wrap; }
+.tg-steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--panel-alt);
+  color: var(--muted);
+  font-weight: 700;
+}
+.tg-steps b {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  background: var(--line);
+  color: #fff;
+}
+.tg-steps li.now { background: var(--blue-soft); color: var(--blue); }
+.tg-steps li.now b { background: var(--blue); }
+.tg-steps li.done { color: var(--ok); }
+.tg-steps li.done b { background: var(--ok); }
+
+.tg-meter {
+  position: relative;
+  height: 14px;
+  margin: 22px 8px 0;
+  border-radius: 99px;
+  background: var(--panel-alt);
+  border: 1px solid var(--line);
+  overflow: visible;
+}
+.tg-zone { position: absolute; top: 0; bottom: 0; background: #E7E5DF; }
+.tg-zone.left { left: 0; border-radius: 99px 0 0 99px; }
+.tg-zone.right { right: 0; border-radius: 0 99px 99px 0; }
+.tg-zone.target { background: var(--blue-soft); box-shadow: inset 0 0 0 2px var(--blue); }
+.tg-center { position: absolute; left: 50%; top: -4px; bottom: -4px; width: 2px; background: var(--muted); opacity: 0.5; }
+.tg-dot {
+  position: absolute;
+  top: 50%;
+  width: 26px;
+  height: 26px;
+  margin: -13px 0 0 -13px;
+  border-radius: 50%;
+  background: var(--text);
+  border: 3px solid #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  transition: left 0.15s linear, background 0.2s;
+}
+.tg-dot.hit { background: var(--ok); }
+.tg-meter-labels { display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; margin: 8px 4px 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-guide * { animation: none !important; }
+}
 
 /* ---------- 결과 / 출석 현황 ---------- */
 .today { margin: 20px 0 0; font-size: 18px; color: var(--text-sub); }
@@ -253,4 +464,11 @@ main {
   .topbar, main { padding-left: 16px; padding-right: 16px; }
   .action-cards, .stat-row, .test { grid-template-columns: 1fr; }
   .card { padding: 24px; }
+  .kiosk-bar { flex-wrap: wrap; padding-top: 12px; padding-bottom: 12px; }
+  .kiosk-bar .top-right { width: 100%; justify-content: space-between; gap: 4px; }
+  .clock-pill { font-size: 14px; padding: 8px 12px; }
+  .nav-link { padding: 8px 10px; font-size: 14px; }
+  .logo-tile { width: 44px; height: 44px; }
+  .action-card { min-height: 0; }
+  .action-cards { padding: 0; }
 }

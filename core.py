@@ -94,6 +94,30 @@ BLINK_HINT_IMAGE_PATH = os.path.join(RESOURCE_DIR, "assets", "blink_hint.gif")
 LIVENESS_THRESHOLD = 0.8
 LIVENESS_VALID_SECONDS = 3  # 출퇴근을 누르기 전 이 시간 안에 '실제 사람' 판정이 있어야 한다
 
+# 고개 돌리기 확인 (웹 버전) — 왼쪽·오른쪽을 무작위 순서로 돌려야 통과한다.
+# 값은 head_yaw_ratio: 코가 두 눈 가운데에서 옆으로 벗어난 정도를 두 눈 사이 거리로 나눈 값 (정면 ≈ 0).
+# 평평한 사진은 기울여도 코가 눈 사이에서 벗어나지 않아서(코에 실제 높이가 없다) 통과하지 못한다.
+HEAD_TURN_RATIO = 0.22     # 이만큼 넘게 돌아가야 '돌렸다'로 본다 (대략 20~25도)
+HEAD_CENTER_RATIO = 0.10   # 마지막에 정면으로 돌아왔다고 보는 범위
+HEAD_TURN_VALID_SECONDS = 15  # 학생 등록: 고개 돌리기를 마친 뒤 이 시간 안에 [얼굴 등록]을 눌러야 한다
+
+
+def head_yaw_ratio(kps):
+    """
+    얼굴 5점(왼눈·오른눈·코·입 양끝, 화면 기준)으로 고개를 돌린 정도를 구한다.
+    음수면 코가 화면 왼쪽으로 — 거울처럼 뒤집은 화면에서는 본인 기준 왼쪽으로 돌린 것이다. 점이 없으면 None.
+    """
+    if kps is None:
+        return None
+    kps = np.asarray(kps, dtype=np.float32)
+    if kps.shape[0] < 3:
+        return None
+    left_eye, right_eye, nose = kps[0], kps[1], kps[2]
+    eye_dist = float(np.linalg.norm(right_eye - left_eye))
+    if eye_dist < 1.0:
+        return None
+    return float((nose[0] - (left_eye[0] + right_eye[0]) / 2) / eye_dist)
+
 # 출근/퇴근 버튼을 누른 뒤의 흐름
 TEST_TIMEOUT = 60              # 카메라 테스트 화면도 켜둔 채 잊지 않도록 이 시간이 지나면 메인 화면으로 돌아간다
 RECOGNIZE_HOLD_SECONDS = 0.6   # 같은 사람으로 이 시간 동안 계속 인식돼야 기록한다 (지나가는 사람 오인식 방지)
@@ -491,10 +515,14 @@ def face_inference_process(conn, threads):
         # 깜빡임이 대신 잡혀서 사진이 통과한다. 가장 큰 얼굴(= 인식 대상)만 잘라서 검사한다.
         blink_score = None
         liveness = None   # (is_live, status) — 위조판별 애드온 결과
+        yaw = None        # 고개를 돌린 정도 (head_yaw_ratio) — 웹 버전의 고개 돌리기 확인에 쓴다
         if not faces and blink_meter is not None:
             blink_meter.no_face()
+        # 가장 큰 얼굴(= 인식 대상)을 맨 앞에 둔다 — 학생 등록도 faces[0]을 쓴다
+        faces = sorted(faces, key=lambda f: -(f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
         if faces:
-            main_face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+            main_face = faces[0]
+            yaw = head_yaw_ratio(getattr(main_face, "kps", None))
             if blink_landmarker is not None:
                 face_crop = crop_face_region(frame, main_face.bbox)
                 # MediaPipe VIDEO 모드는 타임스탬프가 계속 커져야 한다
@@ -506,7 +534,7 @@ def face_inference_process(conn, threads):
             if result is not None:
                 liveness = (result.is_live, result.status)
 
-        conn.send(([(f.bbox, f.embedding) for f in faces], blink_score, liveness))
+        conn.send(([(f.bbox, f.embedding) for f in faces], blink_score, liveness, yaw))
 
 
 def ensure_camera_permission(timeout=60):

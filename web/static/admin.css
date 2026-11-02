@@ -2,6 +2,8 @@
 body.admin { user-select: text; }
 
 a.ghost, a.brand { text-decoration: none; color: inherit; }
+.admin .brand small { display: block; color: var(--muted); font-size: 13px; }
+.admin .brand-title { display: block; }
 a.ghost { color: var(--blue); }
 
 .tabs { display: flex; gap: 8px; flex-wrap: wrap; }

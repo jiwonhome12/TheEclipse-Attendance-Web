@@ -67,7 +67,7 @@ function renderAiStatus(ai) {
 function setVisual(el, cardState) {
   el.className = "visual";
   el.innerHTML = "";
-  if (cardState === "loading" || cardState === "search") el.classList.add("spin");
+  if (cardState === "loading" || cardState === "search" || cardState === "turn") el.classList.add("spin");
   else if (cardState === "blink") el.innerHTML = '<img src="/assets/blink_hint.gif" alt="">';
   else if (cardState === "ok") { el.classList.add("ok"); el.textContent = "✓"; }
   else if (cardState === "warn" || cardState === "unknown") { el.classList.add("warn"); el.textContent = "!"; }
@@ -77,7 +77,12 @@ function setVisual(el, cardState) {
 function renderVerify(st) {
   $("verify-kind").textContent = st.mode === "lookup" ? "출석 조회" : `${ACTION_NAME[st.action]} 확인`;
   const card = cameraCard(st);
-  setVisual($("verify-visual"), card.state);
+  // 고개 돌리기 중에는 동그라미 대신 따라 할 수 있는 안내(얼굴 그림·단계·방향 막대)를 보여준다
+  const turning = Boolean(card.challenge);
+  $("verify-visual").hidden = turning;
+  $("verify-turn").hidden = !turning;
+  if (turning) renderTurnGuide($("verify-turn"), card.challenge);
+  else setVisual($("verify-visual"), card.state);
   $("verify-title").textContent = card.title || "";
   $("verify-detail").textContent = card.detail || "카메라를 바라봐 주세요";
 }
@@ -146,11 +151,11 @@ function formatDuration(sec) {
 
 // ---------- 시계 / 남은 시간 ----------
 function tick() {
+  // tkinter 앱과 같은 "2026-10-26  15:58:51" 형식
   const now = new Date();
-  $("clock").textContent = now.toLocaleString("ko-KR", {
-    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
-    hour12: false,
-  });
+  const p = (n) => String(n).padStart(2, "0");
+  $("clock").textContent = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} `
+    + `${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
   if (!state) return;
   const id = { attendance: "verify-remaining", lookup: "verify-remaining", result: "result-remaining",
                stats: "stats-remaining", test: "test-remaining" }[state.mode];

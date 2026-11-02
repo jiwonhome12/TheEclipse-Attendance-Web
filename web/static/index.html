@@ -8,46 +8,68 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header class="topbar">
-    <button class="brand" data-action="home">
-      <span class="logo">E</span>
-      <span>
-        <strong>창의공간 출석체크</strong>
-        <small>소프트웨어전공 얼굴인식 출퇴근</small>
+  <!-- 상단 — tkinter 앱 시안(ui_screenshots/after/01_main.png)과 같은 구성 -->
+  <header class="topbar kiosk-bar">
+    <button class="brand" data-action="home" aria-label="처음 화면으로">
+      <span class="logo-tile">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/>
+          <path d="M9 9.5v.5M15 9.5v.5M9.5 15a3.5 3.5 0 0 0 5 0"/>
+        </svg>
       </span>
+      <strong class="brand-title">창의공간 얼굴 인식 출석체크 시스템</strong>
     </button>
     <div class="top-right">
-      <span id="clock" class="clock"></span>
-      <button class="ghost" data-action="test">카메라 테스트</button>
-      <button class="ghost" data-action="lookup">출석 조회</button>
-      <a class="ghost" href="/admin">관리자</a>
+      <span class="clock-pill">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        <span id="clock" class="clock"></span>
+      </span>
+      <button class="nav-link" data-action="test">카메라 테스트</button>
+      <button class="nav-link" data-action="lookup">출석 조회</button>
+      <a class="nav-link" href="/admin">관리자</a>
     </div>
   </header>
 
-  <p id="ai-status" class="ai-status" hidden></p>
-
   <main>
     <!-- 메인 화면: 출근 / 퇴근 -->
-    <section id="view-idle" class="view">
-      <h1 class="greeting">출근 또는 퇴근을 눌러 주세요</h1>
+    <section id="view-idle" class="view idle">
       <div class="action-cards">
         <button class="action-card in" data-action="CHECK_IN">
-          <span class="action-icon">→</span>
+          <span class="action-top">
+            <span class="action-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4"/></svg>
+            </span>
+            <span class="action-tag">CHECK-IN</span>
+          </span>
           <span class="action-title">출근</span>
-          <span class="action-sub">얼굴을 확인하고 출근을 기록합니다</span>
+          <span class="action-foot">
+            <span>출근 시작</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15M14 7l5 5-5 5"/></svg>
+          </span>
         </button>
         <button class="action-card out" data-action="CHECK_OUT">
-          <span class="action-icon">←</span>
+          <span class="action-top">
+            <span class="action-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 20H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h4M16 17l5-5-5-5M21 12H9"/></svg>
+            </span>
+            <span class="action-tag">CHECK-OUT</span>
+          </span>
           <span class="action-title">퇴근</span>
-          <span class="action-sub">얼굴을 확인하고 퇴근을 기록합니다</span>
+          <span class="action-foot">
+            <span>퇴근 시작</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15M14 7l5 5-5 5"/></svg>
+          </span>
         </button>
       </div>
+      <p class="idle-hint">버튼을 누른 뒤 카메라를 바라보고, 안내에 따라 고개를 왼쪽 · 오른쪽으로 돌리면 자동으로 기록됩니다</p>
+      <p id="ai-status" class="ai-status" hidden></p>
     </section>
 
     <!-- 출근·퇴근·출석 조회: 얼굴 확인 중 -->
     <section id="view-verify" class="view card verify" hidden>
       <p id="verify-kind" class="pill"></p>
       <div id="verify-visual" class="visual"></div>
+      <div id="verify-turn" class="turn-guide" hidden></div>
       <h2 id="verify-title"></h2>
       <p id="verify-detail" class="detail"></p>
       <div class="card-foot">
@@ -122,6 +144,7 @@
     </section>
   </main>
 
+  <script src="/static/turn-guide.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

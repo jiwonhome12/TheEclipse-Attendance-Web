@@ -201,12 +201,15 @@ function renderRegisterState(st) {
   setVisual($("register-visual"), card.state);
   $("register-title").textContent = card.title || "";
   $("register-detail").textContent = card.detail || "";
+  // 고개 돌리기 안내 — 등록할 학생이 보고 따라 한다
+  $("register-turn").hidden = !card.challenge;
+  if (card.challenge) renderTurnGuide($("register-turn"), card.challenge);
 }
 
 function setVisual(el, state) {
   el.className = "visual small";
   el.innerHTML = "";
-  if (state === "loading" || state === "search") el.classList.add("spin");
+  if (state === "loading" || state === "search" || state === "turn") el.classList.add("spin");
   else if (state === "blink") el.innerHTML = '<img src="/assets/blink_hint.gif" alt="">';
   else if (state === "ok") { el.classList.add("ok"); el.textContent = "✓"; }
   else if (state === "warn" || state === "unknown") { el.classList.add("warn"); el.textContent = "!"; }

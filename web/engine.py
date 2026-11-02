@@ -1,9 +1,11 @@
 """
-웹 버전 출석체크의 엔진 — 카메라, 얼굴 인식, 사람 확인(눈 깜빡임·위조판별), 출근/퇴근 흐름.
-tkinter 앱(AttendanceApp)이 화면과 섞어서 하던 일을 화면 없이 그대로 옮겼다.
+웹 버전 출석체크의 엔진 — 카메라, 얼굴 인식, 사람 확인(고개 돌리기·위조판별), 출근/퇴근 흐름.
+tkinter 앱(AttendanceApp)이 화면과 섞어서 하던 일을 화면 없이 옮겼다. 사진/영상으로 대리 출석하는 것은
+tkinter 앱의 눈 깜빡임 대신 '무작위 순서로 왼쪽·오른쪽 고개 돌리기'(TurnChallenge)로 막는다.
 브라우저는 state()로 지금 상태를 받아 그리기만 하고, 버튼을 누르면 start_session()/go_idle()을 부른다.
 """
 import multiprocessing
+import random
 import threading
 import time
 from datetime import date
@@ -24,6 +26,54 @@ import core
 #   register   : 관리자 [학생 등록] 탭이 열려 있다. 카메라를 켜고 등록할 얼굴을 기다린다
 SESSION_MODES = ("attendance", "lookup", "test")
 REGISTER_HEARTBEAT_SECONDS = 60  # 관리자 화면이 이 시간 동안 소식이 없으면(창을 닫았으면) 카메라를 끈다
+FACE_LOST_SECONDS = 2.0          # 얼굴이 이 시간 넘게 안 보이면 고개 돌리기를 처음부터 다시 한다
+TURN_IDENTITY_SIM = 0.30         # 고개를 돌린 얼굴이 처음 얼굴과 이만큼은 닮아야 같은 사람이 돌린 것으로 센다
+TURN_NAMES = {"left": "왼쪽", "right": "오른쪽"}
+
+
+class TurnChallenge:
+    """
+    왼쪽·오른쪽을 무작위 순서로 한 번씩 돌린 뒤 정면으로 돌아오면 통과한다.
+    순서를 미리 알 수 없으니 녹화해 둔 영상으로 따라 하기 어렵고, 평평한 사진은 기울여도 코 위치가
+    바뀌지 않아(core.head_yaw_ratio 참고) 돌린 것으로 잡히지 않는다.
+    돌리는 동안 다른 사람이 대신 하지 못하게, 처음 얼굴(ref)과 비슷한 얼굴이 돌린 것만 센다.
+    """
+
+    def __init__(self, ref_embedding):
+        self.steps = random.sample(list(TURN_NAMES), 2)
+        self.index = 0
+        self.done_at = None   # 다 돌리고 정면으로 돌아온 시각
+        norm = np.linalg.norm(ref_embedding)
+        self.ref = ref_embedding / norm if norm else ref_embedding
+
+    @property
+    def turned(self):
+        return self.index >= len(self.steps)
+
+    def same_person(self, embedding):
+        norm = np.linalg.norm(embedding)
+        return norm > 0 and float(self.ref @ (embedding / norm)) >= TURN_IDENTITY_SIM
+
+    def update(self, yaw, embedding):
+        """이번 프레임의 고개 방향을 반영한다. 다 돌리고 정면으로 돌아오면 done_at이 정해진다."""
+        if yaw is None or self.done_at is not None or not self.same_person(embedding):
+            return
+        if not self.turned:
+            target = self.steps[self.index]
+            if (target == "left" and yaw <= -core.HEAD_TURN_RATIO) or (target == "right" and yaw >= core.HEAD_TURN_RATIO):
+                self.index += 1
+        elif abs(yaw) <= core.HEAD_CENTER_RATIO:
+            self.done_at = time.time()
+
+    def to_dict(self, yaw):
+        """화면의 고개 돌리기 안내에 쓰는 값."""
+        return {"steps": self.steps, "index": self.index, "done": self.done_at is not None,
+                "yaw": None if yaw is None else round(yaw, 2), "turn": core.HEAD_TURN_RATIO}
+
+    def instruction(self):
+        if not self.turned:
+            return f"고개를 {TURN_NAMES[self.steps[self.index]]}으로 돌려 주세요"
+        return "정면을 바라봐 주세요"
 
 
 class AttendanceEngine:
@@ -48,7 +98,11 @@ class AttendanceEngine:
         self.card = {}                  # 화면에 보여줄 안내 (state, title, detail, sim)
         self.payload = None             # result/stats 화면에 보여줄 내용
         self._candidate_id = None       # 지금 인식되고 있는 학생 — RECOGNIZE_HOLD_SECONDS 동안 유지돼야 기록
+        self._candidate_user = None
         self._candidate_since = 0.0
+        self.challenge = None           # 지금 진행 중인 고개 돌리기 (TurnChallenge)
+        self._last_face_time = 0.0
+        self.last_yaw = None
 
         self.ai_ready = False
         self.ai_failed = False
@@ -62,10 +116,7 @@ class AttendanceEngine:
         self.face_labels = []           # 영상에 그릴 (bbox, 글자, 등록 여부) — 인식 결과가 올 때마다 바뀐다
         self.face_labels_seq = -1       # face_labels를 계산한 프레임 번호
 
-        # 사진/영상 판별 상태 (인식 프로세스가 값을 보내주면 켜진다)
-        self.liveness_enabled = False
-        self.last_blink_time = 0.0
-        self._eye_closed = False
+        # InsightFace 위조판별 애드온 상태 (애드온이 결과를 보내주면 켜진다)
         self.antispoof_enabled = False
         self.last_live_time = 0.0
         self.last_fake_time = 0.0
@@ -116,8 +167,8 @@ class AttendanceEngine:
     def _changed(self):
         self.version += 1
 
-    def _set_card(self, state, title, detail="", sim=None):
-        card = {"state": state, "title": title, "detail": detail, "sim": sim}
+    def _set_card(self, state, title, detail="", sim=None, challenge=None):
+        card = {"state": state, "title": title, "detail": detail, "sim": sim, "challenge": challenge}
         if card != self.card:
             self.card = card
             self._changed()
@@ -160,7 +211,7 @@ class AttendanceEngine:
             self.pending_action = action if mode == "attendance" else None
             self.session_started = time.time()
             self.payload = None
-            self._candidate_id = None
+            self._reset_candidate()
             self._reset_liveness()
             self.card = {}
             self._set_card("loading" if not self.ai_ready else "search",
@@ -185,6 +236,7 @@ class AttendanceEngine:
             self.pending_action = None
             self.payload = None
             self.session_started = time.time()
+            self._reset_candidate()
             self._reset_liveness()
             self.card = {}
             self._set_card("loading" if not self.ai_ready else "search",
@@ -213,12 +265,17 @@ class AttendanceEngine:
         with self._lock:
             if self.mode != "register" or not self.cached_faces:
                 raise ValueError("카메라 영역에 등록할 학생의 얼굴이 감지되지 않았습니다.")
+            ch = self.challenge
+            if ch is None or ch.done_at is None or time.time() - ch.done_at > core.HEAD_TURN_VALID_SECONDS:
+                raise ValueError("사람 확인이 끝나지 않았습니다.\n"
+                                 "등록할 학생이 화면 안내대로 고개를 왼쪽·오른쪽으로 돌린 뒤 다시 눌러주세요.")
+            if self.last_yaw is None or abs(self.last_yaw) > core.HEAD_CENTER_RATIO:
+                raise ValueError("카메라를 정면으로 바라본 상태에서 눌러주세요.")
             if not self.passes_antispoof():
                 raise ValueError(self.liveness_reject_message())
-            if not self.has_recent_blink():
-                raise ValueError("사람 얼굴이 아닌 것으로 보입니다.\n"
-                                 "등록할 학생이 카메라를 바라보고 눈을 천천히 감았다 뜬 뒤 다시 눌러주세요.")
             embedding = np.asarray(self.cached_faces[0][1], dtype=np.float32)
+            if not ch.same_person(embedding):
+                raise ValueError("고개를 돌린 사람과 지금 얼굴이 다릅니다. 다시 시도해주세요.")
             dup = core.find_duplicate_face(embedding, self.enrolled_users, self.embed_matrix)
         if dup:
             raise ValueError("이미 등록된 얼굴과 유사도가 높습니다.\n"
@@ -227,6 +284,8 @@ class AttendanceEngine:
         core.insert_student(student_id, name, str(major or "").strip() or core.DEPARTMENT_NAME,
                             str(phone or "").strip(), grade, embedding)
         self.reload_users()
+        with self._lock:
+            self._reset_candidate()  # 다음 학생은 고개 돌리기부터 다시
 
     def _enter(self, mode, payload):
         """세션이 끝나 결과 / 출석 현황 / 메인 화면으로 넘어간다 — 카메라는 끈다."""
@@ -234,7 +293,7 @@ class AttendanceEngine:
         self.pending_action = None
         self.payload = payload
         self.session_started = time.time()
-        self._candidate_id = None
+        self._reset_candidate()
         self.card = {}
         self._set_camera(False)
         self._changed()
@@ -250,10 +309,14 @@ class AttendanceEngine:
         if on:
             self.camera_error = False
 
+    def _reset_candidate(self):
+        """인식 중인 학생과 고개 돌리기를 처음부터 다시 한다."""
+        self._candidate_id = None
+        self._candidate_user = None
+        self.challenge = None
+
     def _reset_liveness(self):
-        """다음 사람이 앞 사람의 깜빡임/실제 사람 판정을 이어받지 않도록 비운다."""
-        self.last_blink_time = 0.0
-        self._eye_closed = False
+        """다음 사람이 앞 사람의 실제 사람 판정을 이어받지 않도록 비운다."""
         self.last_live_time = 0.0
         self.last_fake_time = 0.0
         self.last_liveness_status = None
@@ -336,7 +399,8 @@ class AttendanceEngine:
                 last_seq = seq
                 started = time.time()
                 self.face_conn.send(frame)
-                results, blink_score, liveness = self.face_conn.recv()
+                # 눈 깜빡임 값은 tkinter 앱만 쓴다 — 웹은 고개 방향(yaw)으로 확인한다
+                results, _blink, liveness, yaw = self.face_conn.recv()
                 rest = core.AI_MIN_INTERVAL - (time.time() - started)
                 if rest > 0:
                     time.sleep(rest)
@@ -345,15 +409,15 @@ class AttendanceEngine:
                     if not (self.camera_on and generation == self.camera_generation):
                         continue
                     self.cached_faces = results
-                    self._update_blink_state(blink_score)
+                    self.last_yaw = yaw
                     self._update_liveness_state(liveness)
                     matched_user, best_sim = self._match_faces(results, seq)
                     if self.mode in ("attendance", "lookup"):
-                        self._process_attendance(frame, results, matched_user)
+                        self._process_attendance(results, matched_user, yaw)
                     elif self.mode == "register":
-                        self._process_register(results, matched_user)
+                        self._process_register(results, matched_user, yaw)
                     elif self.mode == "test":
-                        self._process_camera_test(results, matched_user, best_sim)
+                        self._process_camera_test(results, matched_user, best_sim, yaw)
         except (EOFError, OSError):
             if self.is_running:
                 self.ai_failed = True
@@ -400,22 +464,6 @@ class AttendanceEngine:
         matched = best_user if (best_user and best_sim >= core.THRESHOLD) else None
         return matched, best_sim
 
-    def _update_blink_state(self, blink_score):
-        """눈을 감았다가(BLINK_CLOSED_SCORE 이상) 다시 떴을 때(BLINK_OPEN_SCORE 이하) 한 번 깜빡인 것으로 본다."""
-        if blink_score is None:
-            return
-        self.liveness_enabled = True
-        if blink_score >= core.BLINK_CLOSED_SCORE:
-            self._eye_closed = True
-        elif self._eye_closed and blink_score <= core.BLINK_OPEN_SCORE:
-            self._eye_closed = False
-            self.last_blink_time = time.time()
-
-    def has_recent_blink(self):
-        if not self.liveness_enabled:
-            return True
-        return (time.time() - self.last_blink_time) <= core.BLINK_VALID_SECONDS
-
     def _update_liveness_state(self, liveness):
         if liveness is None:
             return
@@ -441,40 +489,85 @@ class AttendanceEngine:
             return "얼굴이 너무 크게 잡혀 확인할 수 없습니다.\n카메라에서 조금 물러난 뒤 다시 시도해주세요."
         return "본인 확인을 하지 못했습니다.\n카메라를 정면으로 바라본 뒤 다시 시도해주세요."
 
-    def _process_register(self, faces, matched_user):
-        """[학생 등록] 탭에 지금 [얼굴 등록]을 눌러도 되는지 알려준다."""
-        if not faces:
-            self._set_card("search", "얼굴을 찾는 중..")
-        elif matched_user is not None:
-            self._set_card("warn", "이미 등록된 얼굴입니다", f"{self._display_name(matched_user)} 학생")
-        elif not self.passes_antispoof():
-            self._set_card("error", "사람 확인이 안 됩니다", self.liveness_reject_message())
-        elif not self.has_recent_blink():
-            self._set_card("blink", "눈을 천천히 감았다 떠 주세요", "깜빡임이 확인되면 등록할 수 있습니다")
-        else:
-            self._set_card("ok", "등록할 수 있습니다", "[얼굴 등록]을 눌러 주세요")
+    def _main_face(self, faces):
+        """인식 대상(가장 큰 얼굴, 인식 프로세스가 맨 앞에 둔다)의 임베딩."""
+        return np.asarray(faces[0][1], dtype=np.float32)
 
-    def _process_attendance(self, frame, faces, matched_user):
+    def _face_present(self, faces):
+        """얼굴이 보이는지. 잠깐(FACE_LOST_SECONDS 안) 놓친 것은 계속 있는 것으로 본다."""
+        now = time.time()
+        if faces:
+            self._last_face_time = now
+            return True
+        return self.challenge is not None and now - self._last_face_time < FACE_LOST_SECONDS
+
+    def _process_register(self, faces, matched_user, yaw):
+        """[학생 등록] 탭: 고개 돌리기를 마치면 [얼굴 등록]을 눌러도 된다고 알려준다."""
+        if not self._face_present(faces):
+            self._reset_candidate()
+            self._set_card("search", "얼굴을 찾는 중..")
+            return
+        if not faces:
+            return  # 잠깐 놓쳤다 — 안내는 그대로 둔다
+        if matched_user is not None:
+            self._reset_candidate()
+            self._set_card("warn", "이미 등록된 얼굴입니다", f"{self._display_name(matched_user)} 학생")
+            return
+        embedding = self._main_face(faces)
+        if self.challenge is None:
+            self.challenge = TurnChallenge(embedding)
+        ch = self.challenge
+        ch.update(yaw, embedding)
+        if ch.done_at is not None and time.time() - ch.done_at > core.HEAD_TURN_VALID_SECONDS:
+            self.challenge = ch = TurnChallenge(embedding)  # 너무 오래 지났다 — 다시 돌린다
+        if ch.done_at is None:
+            self._set_card("turn", ch.instruction(), "화면의 안내를 따라 천천히 돌려 주세요",
+                           challenge=ch.to_dict(yaw))
+        elif not self.passes_antispoof():
+            self._set_card("error", "사람 확인이 안 됩니다", self.liveness_reject_message(),
+                           challenge=ch.to_dict(yaw))
+        else:
+            self._set_card("ok", "등록할 수 있습니다", "정면을 바라본 채 [얼굴 등록]을 눌러 주세요",
+                           challenge=ch.to_dict(yaw))
+
+    def _process_attendance(self, faces, matched_user, yaw):
         """
-        같은 학생이 RECOGNIZE_HOLD_SECONDS 동안 계속 인식되고 사람 확인(위조판별 + 눈 깜빡임)까지
-        통과하면 출근/퇴근을 기록하거나(attendance) 출석 현황을 보여준다(lookup).
+        같은 학생이 RECOGNIZE_HOLD_SECONDS 동안 인식되면 고개 돌리기(왼쪽·오른쪽 무작위 순서)를 시키고,
+        다 돌린 뒤 정면에서 다시 그 학생으로 확인되고 위조판별까지 통과하면
+        출근/퇴근을 기록하거나(attendance) 출석 현황을 보여준다(lookup).
         """
-        if matched_user is None:
-            self._candidate_id = None
-            if faces:
-                self._set_card("warn", "등록되지 않은 얼굴입니다")
-            else:
-                self._set_card("search", "얼굴을 찾는 중..")
+        now = time.time()
+        if not self._face_present(faces):
+            self._reset_candidate()
+            self._set_card("search", "얼굴을 찾는 중..")
+            return
+        if not faces:
+            return  # 잠깐 놓쳤다 — 안내는 그대로 둔다
+
+        embedding = self._main_face(faces)
+        if matched_user is not None and matched_user["user_id"] != self._candidate_id:
+            # 처음 인식했거나 다른 학생이 섰다 — 처음부터
+            self._candidate_id = matched_user["user_id"]
+            self._candidate_user = matched_user
+            self._candidate_since = now
+            self.challenge = TurnChallenge(embedding)
+        if self._candidate_id is None:
+            self._set_card("warn", "등록되지 않은 얼굴입니다")
             return
 
-        name = self._display_name(matched_user)
-        checking = f"{name} 학생 얼굴 확인 중"
-        now = time.time()
-        if self._candidate_id != matched_user["user_id"]:
-            self._candidate_id = matched_user["user_id"]
-            self._candidate_since = now
+        name = self._display_name(self._candidate_user)
+        ch = self.challenge
         if now - self._candidate_since < core.RECOGNIZE_HOLD_SECONDS:
-            self._set_card("blink", checking, "눈을 천천히 감았다 떠 주세요")
+            self._set_card("search", f"{name} 학생 얼굴 확인 중", "카메라를 바라봐 주세요")
+            return
+        ch.update(yaw, embedding)
+        if ch.done_at is None:
+            self._set_card("turn", f"{name} 학생, {ch.instruction()}", "화면의 안내를 따라 천천히 돌려 주세요",
+                           challenge=ch.to_dict(yaw))
+            return
+        # 다 돌렸다 — 정면에서 같은 학생인지 다시 확인한다 (돌리는 사이 사람이 바뀌지 않았는지)
+        if matched_user is None or matched_user["user_id"] != self._candidate_id:
+            self._set_card("turn", f"{name} 학생, 정면을 바라봐 주세요", "", challenge=ch.to_dict(yaw))
             return
         if not self.passes_antispoof():
             if (now - self.last_fake_time) <= core.LIVENESS_VALID_SECONDS:
@@ -482,13 +575,10 @@ class AttendanceEngine:
             elif self.last_liveness_status == "input_rejected":
                 self._set_card("warn", "얼굴이 너무 가깝습니다", "카메라에서 조금 물러나 주세요")
             else:
-                self._set_card("warn", checking, "카메라를 정면으로 바라봐 주세요")
-            return
-        if not self.has_recent_blink():
-            self._set_card("blink", checking, "눈을 천천히 감았다 떠 주세요")
+                self._set_card("warn", f"{name} 학생 얼굴 확인 중", "카메라를 정면으로 바라봐 주세요")
             return
 
-        student = {"user_id": matched_user["user_id"], "name": name}
+        student = {"user_id": self._candidate_id, "name": name}
         if self.mode == "lookup":
             self._enter("stats", {"student": student, **self._stats_for(student["user_id"])})
             return
@@ -497,13 +587,15 @@ class AttendanceEngine:
         self._enter("result", {"student": student, "log_type": log_type, "success": success,
                                "detail": detail, "today": core.get_today_attendance_status(student["user_id"])})
 
-    def _process_camera_test(self, faces, matched_user, best_sim):
+    def _process_camera_test(self, faces, matched_user, best_sim, yaw):
+        # 고개 방향 값도 같이 보여준다 — HEAD_TURN_RATIO를 이 카메라에 맞게 조정할 때 참고한다
+        direction = "" if yaw is None else f" · 고개 방향 {yaw:+.2f}"
         if matched_user is not None:
             self._set_card("ok", f"{self._display_name(matched_user)} 학생 인식",
-                           f"유사도 {best_sim:.2f}", round(best_sim, 2))
+                           f"유사도 {best_sim:.2f}{direction}", round(best_sim, 2))
         elif faces:
             self._set_card("unknown", "등록되지 않은 얼굴입니다",
-                           f"유사도 {max(best_sim, 0):.2f}", round(max(best_sim, 0), 2))
+                           f"유사도 {max(best_sim, 0):.2f}{direction}", round(max(best_sim, 0), 2))
         else:
             self._set_card("search", "얼굴을 찾는 중..")
 
