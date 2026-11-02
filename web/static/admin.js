@@ -248,7 +248,6 @@ $("roster-select").addEventListener("change", (e) => {
   if (!s) return;
   const f = $("register-form").elements;
   for (const key of ["user_id", "name", "major", "phone", "grade"]) f[key].value = s[key] || "";
-  if (!f.major.value) f.major.value = "소프트웨어전공";
 });
 
 $("register-form").addEventListener("submit", guarded(async (e) => {

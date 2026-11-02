@@ -2253,7 +2253,6 @@ class AdminDashboardFrame(tk.Frame):
     def clear_add_form(self):
         for entry in self.add_entries.values():
             entry.delete(0, tk.END)
-        self.add_entries["major"].insert(0, DEPARTMENT_NAME)  # 대부분 소프트웨어전공이라 미리 채워 둔다
 
     def refresh_roster_data(self):
         """[학생 현황/수정]·[학생 등록]의 새로고침 아이콘 — 명단을 다시 읽고 결과를 알려준다."""
