@@ -94,11 +94,14 @@ BLINK_HINT_IMAGE_PATH = os.path.join(RESOURCE_DIR, "assets", "blink_hint.gif")
 LIVENESS_THRESHOLD = 0.8
 LIVENESS_VALID_SECONDS = 3  # 출퇴근을 누르기 전 이 시간 안에 '실제 사람' 판정이 있어야 한다
 
-# 고개 돌리기 확인 (웹 버전) — 왼쪽·오른쪽을 무작위 순서로 돌려야 통과한다.
-# 값은 head_yaw_ratio: 코가 두 눈 가운데에서 옆으로 벗어난 정도를 두 눈 사이 거리로 나눈 값 (정면 ≈ 0).
-# 평평한 사진은 기울여도 코가 눈 사이에서 벗어나지 않아서(코에 실제 높이가 없다) 통과하지 못한다.
-HEAD_TURN_RATIO = 0.22     # 이만큼 넘게 돌아가야 '돌렸다'로 본다 (대략 20~25도)
-HEAD_CENTER_RATIO = 0.10   # 마지막에 정면으로 돌아왔다고 보는 범위
+# 고개 돌리기 확인 (웹 버전) — 위·아래·왼쪽·오른쪽 중 무작위 2방향으로 돌려야 통과한다.
+#   좌우: head_yaw_ratio — 코가 두 눈 가운데에서 옆으로 벗어난 정도 / 두 눈 사이 거리 (정면 ≈ 0)
+#   상하: head_pitch_ratio — 코가 눈~입 사이 어디쯤에 있는지 (사람·카메라 높이마다 달라서 정면 값과의 차이로 본다)
+# 평평한 사진은 어느 쪽으로 기울여도 이 비율이 바뀌지 않아서(코에 실제 높이가 없다) 통과하지 못한다.
+HEAD_TURN_RATIO = 0.22     # 좌우: 이만큼 넘게 돌아가야 '돌렸다'로 본다 (대략 20~25도)
+HEAD_CENTER_RATIO = 0.10   # 좌우: 마지막에 정면으로 돌아왔다고 보는 범위
+HEAD_PITCH_DELTA = 0.12    # 상하: 정면 값보다 이만큼 넘게 바뀌어야 '들었다/숙였다'로 본다
+HEAD_PITCH_CENTER = 0.06   # 상하: 정면으로 돌아왔다고 보는 범위
 HEAD_TURN_VALID_SECONDS = 15  # 학생 등록: 고개 돌리기를 마친 뒤 이 시간 안에 [얼굴 등록]을 눌러야 한다
 
 
@@ -117,6 +120,29 @@ def head_yaw_ratio(kps):
     if eye_dist < 1.0:
         return None
     return float((nose[0] - (left_eye[0] + right_eye[0]) / 2) / eye_dist)
+
+
+def head_pitch_ratio(kps):
+    """
+    코가 두 눈 높이(0)와 입 높이(1) 사이 어디에 있는지. 고개를 들면 작아지고 숙이면 커진다.
+    (앞으로 튀어나온 코가 눈·입보다 더 많이 위아래로 움직이기 때문) 점이 없으면 None.
+    """
+    if kps is None:
+        return None
+    kps = np.asarray(kps, dtype=np.float32)
+    if kps.shape[0] < 5:
+        return None
+    eye_y = (kps[0][1] + kps[1][1]) / 2
+    mouth_y = (kps[3][1] + kps[4][1]) / 2
+    if mouth_y - eye_y < 1.0:
+        return None
+    return float((kps[2][1] - eye_y) / (mouth_y - eye_y))
+
+
+def head_pose(kps):
+    """(좌우 head_yaw_ratio, 상하 head_pitch_ratio). 얼굴 점이 없으면 None."""
+    yaw, pitch = head_yaw_ratio(kps), head_pitch_ratio(kps)
+    return None if yaw is None or pitch is None else (yaw, pitch)
 
 # 출근/퇴근 버튼을 누른 뒤의 흐름
 TEST_TIMEOUT = 60              # 카메라 테스트 화면도 켜둔 채 잊지 않도록 이 시간이 지나면 메인 화면으로 돌아간다
@@ -515,14 +541,14 @@ def face_inference_process(conn, threads):
         # 깜빡임이 대신 잡혀서 사진이 통과한다. 가장 큰 얼굴(= 인식 대상)만 잘라서 검사한다.
         blink_score = None
         liveness = None   # (is_live, status) — 위조판별 애드온 결과
-        yaw = None        # 고개를 돌린 정도 (head_yaw_ratio) — 웹 버전의 고개 돌리기 확인에 쓴다
+        pose = None       # 고개 방향 (head_pose: 좌우, 상하) — 웹 버전의 고개 돌리기 확인에 쓴다
         if not faces and blink_meter is not None:
             blink_meter.no_face()
         # 가장 큰 얼굴(= 인식 대상)을 맨 앞에 둔다 — 학생 등록도 faces[0]을 쓴다
         faces = sorted(faces, key=lambda f: -(f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
         if faces:
             main_face = faces[0]
-            yaw = head_yaw_ratio(getattr(main_face, "kps", None))
+            pose = head_pose(getattr(main_face, "kps", None))
             if blink_landmarker is not None:
                 face_crop = crop_face_region(frame, main_face.bbox)
                 # MediaPipe VIDEO 모드는 타임스탬프가 계속 커져야 한다
@@ -534,7 +560,7 @@ def face_inference_process(conn, threads):
             if result is not None:
                 liveness = (result.is_live, result.status)
 
-        conn.send(([(f.bbox, f.embedding) for f in faces], blink_score, liveness, yaw))
+        conn.send(([(f.bbox, f.embedding) for f in faces], blink_score, liveness, pose))
 
 
 def ensure_camera_permission(timeout=60):

@@ -1,7 +1,7 @@
 """
 웹 버전 출석체크의 엔진 — 카메라, 얼굴 인식, 사람 확인(고개 돌리기·위조판별), 출근/퇴근 흐름.
 tkinter 앱(AttendanceApp)이 화면과 섞어서 하던 일을 화면 없이 옮겼다. 사진/영상으로 대리 출석하는 것은
-tkinter 앱의 눈 깜빡임 대신 '무작위 순서로 왼쪽·오른쪽 고개 돌리기'(TurnChallenge)로 막는다.
+tkinter 앱의 눈 깜빡임 대신 '상하좌우 중 무작위 2방향 고개 돌리기'(TurnChallenge)로 막는다.
 브라우저는 state()로 지금 상태를 받아 그리기만 하고, 버튼을 누르면 start_session()/go_idle()을 부른다.
 """
 import multiprocessing
@@ -28,23 +28,37 @@ SESSION_MODES = ("attendance", "lookup", "test")
 REGISTER_HEARTBEAT_SECONDS = 60  # 관리자 화면이 이 시간 동안 소식이 없으면(창을 닫았으면) 카메라를 끈다
 FACE_LOST_SECONDS = 2.0          # 얼굴이 이 시간 넘게 안 보이면 고개 돌리기를 처음부터 다시 한다
 TURN_IDENTITY_SIM = 0.30         # 고개를 돌린 얼굴이 처음 얼굴과 이만큼은 닮아야 같은 사람이 돌린 것으로 센다
-TURN_NAMES = {"left": "왼쪽", "right": "오른쪽"}
+# 고개 돌리기 방향 — (화면에 보이는 이름, 안내 문구)
+TURN_DIRECTIONS = {
+    "left": ("왼쪽", "고개를 왼쪽으로 돌려 주세요"),
+    "right": ("오른쪽", "고개를 오른쪽으로 돌려 주세요"),
+    "up": ("위", "고개를 위로 들어 주세요"),
+    "down": ("아래", "고개를 아래로 숙여 주세요"),
+}
 
 
 class TurnChallenge:
     """
-    왼쪽·오른쪽을 무작위 순서로 한 번씩 돌린 뒤 정면으로 돌아오면 통과한다.
-    순서를 미리 알 수 없으니 녹화해 둔 영상으로 따라 하기 어렵고, 평평한 사진은 기울여도 코 위치가
-    바뀌지 않아(core.head_yaw_ratio 참고) 돌린 것으로 잡히지 않는다.
+    위·아래·왼쪽·오른쪽 중 무작위로 고른 2방향으로 차례로 고개를 돌린 뒤 정면으로 돌아오면 통과한다.
+    방향과 순서를 미리 알 수 없으니(4×3=12가지) 녹화해 둔 영상으로 따라 하기 어렵고, 평평한 사진은
+    기울여도 코의 상대 위치가 바뀌지 않아(core.head_pose 참고) 돌린 것으로 잡히지 않는다.
     돌리는 동안 다른 사람이 대신 하지 못하게, 처음 얼굴(ref)과 비슷한 얼굴이 돌린 것만 센다.
+    상하 값은 사람·카메라 높이마다 다르므로 처음 정면 값(ref_pitch)과의 차이로 본다.
     """
 
-    def __init__(self, ref_embedding):
-        self.steps = random.sample(list(TURN_NAMES), 2)
+    def __init__(self, ref_embedding, pose):
+        self.steps = random.sample(list(TURN_DIRECTIONS), 2)
         self.index = 0
         self.done_at = None   # 다 돌리고 정면으로 돌아온 시각
         norm = np.linalg.norm(ref_embedding)
         self.ref = ref_embedding / norm if norm else ref_embedding
+        self.ref_pitch = None
+        self._set_ref_pitch(pose)
+
+    def _set_ref_pitch(self, pose):
+        # 정면(좌우로 안 돌린 상태)일 때의 상하 값을 기준으로 삼는다
+        if self.ref_pitch is None and pose is not None and abs(pose[0]) <= core.HEAD_CENTER_RATIO:
+            self.ref_pitch = pose[1]
 
     @property
     def turned(self):
@@ -54,25 +68,47 @@ class TurnChallenge:
         norm = np.linalg.norm(embedding)
         return norm > 0 and float(self.ref @ (embedding / norm)) >= TURN_IDENTITY_SIM
 
-    def update(self, yaw, embedding):
+    def offsets(self, pose):
+        """(좌우, 상하) — 상하는 정면 기준값과의 차이. 기준값이 아직 없으면 상하는 None."""
+        if pose is None:
+            return None, None
+        yaw, pitch = pose
+        return yaw, None if self.ref_pitch is None else pitch - self.ref_pitch
+
+    def is_center(self, pose):
+        yaw, dpitch = self.offsets(pose)
+        return (yaw is not None and dpitch is not None
+                and abs(yaw) <= core.HEAD_CENTER_RATIO and abs(dpitch) <= core.HEAD_PITCH_CENTER)
+
+    def update(self, pose, embedding):
         """이번 프레임의 고개 방향을 반영한다. 다 돌리고 정면으로 돌아오면 done_at이 정해진다."""
-        if yaw is None or self.done_at is not None or not self.same_person(embedding):
+        self._set_ref_pitch(pose)
+        if pose is None or self.ref_pitch is None or self.done_at is not None or not self.same_person(embedding):
             return
+        yaw, dpitch = self.offsets(pose)
         if not self.turned:
-            target = self.steps[self.index]
-            if (target == "left" and yaw <= -core.HEAD_TURN_RATIO) or (target == "right" and yaw >= core.HEAD_TURN_RATIO):
+            reached = {
+                "left": yaw <= -core.HEAD_TURN_RATIO,
+                "right": yaw >= core.HEAD_TURN_RATIO,
+                "up": dpitch <= -core.HEAD_PITCH_DELTA,
+                "down": dpitch >= core.HEAD_PITCH_DELTA,
+            }
+            if reached[self.steps[self.index]]:
                 self.index += 1
-        elif abs(yaw) <= core.HEAD_CENTER_RATIO:
+        elif self.is_center(pose):
             self.done_at = time.time()
 
-    def to_dict(self, yaw):
+    def to_dict(self, pose):
         """화면의 고개 돌리기 안내에 쓰는 값."""
+        yaw, dpitch = self.offsets(pose)
         return {"steps": self.steps, "index": self.index, "done": self.done_at is not None,
-                "yaw": None if yaw is None else round(yaw, 2), "turn": core.HEAD_TURN_RATIO}
+                "yaw": None if yaw is None else round(yaw, 2),
+                "pitch": None if dpitch is None else round(dpitch, 2),
+                "turn": core.HEAD_TURN_RATIO, "pitch_turn": core.HEAD_PITCH_DELTA}
 
     def instruction(self):
         if not self.turned:
-            return f"고개를 {TURN_NAMES[self.steps[self.index]]}으로 돌려 주세요"
+            return TURN_DIRECTIONS[self.steps[self.index]][1]
         return "정면을 바라봐 주세요"
 
 
@@ -102,7 +138,7 @@ class AttendanceEngine:
         self._candidate_since = 0.0
         self.challenge = None           # 지금 진행 중인 고개 돌리기 (TurnChallenge)
         self._last_face_time = 0.0
-        self.last_yaw = None
+        self.last_pose = None           # 마지막 고개 방향 (core.head_pose)
 
         self.ai_ready = False
         self.ai_failed = False
@@ -268,8 +304,8 @@ class AttendanceEngine:
             ch = self.challenge
             if ch is None or ch.done_at is None or time.time() - ch.done_at > core.HEAD_TURN_VALID_SECONDS:
                 raise ValueError("사람 확인이 끝나지 않았습니다.\n"
-                                 "등록할 학생이 화면 안내대로 고개를 왼쪽·오른쪽으로 돌린 뒤 다시 눌러주세요.")
-            if self.last_yaw is None or abs(self.last_yaw) > core.HEAD_CENTER_RATIO:
+                                 "등록할 학생이 화면 안내대로 고개를 돌린 뒤 다시 눌러주세요.")
+            if not ch.is_center(self.last_pose):
                 raise ValueError("카메라를 정면으로 바라본 상태에서 눌러주세요.")
             if not self.passes_antispoof():
                 raise ValueError(self.liveness_reject_message())
@@ -399,8 +435,8 @@ class AttendanceEngine:
                 last_seq = seq
                 started = time.time()
                 self.face_conn.send(frame)
-                # 눈 깜빡임 값은 tkinter 앱만 쓴다 — 웹은 고개 방향(yaw)으로 확인한다
-                results, _blink, liveness, yaw = self.face_conn.recv()
+                # 눈 깜빡임 값은 tkinter 앱만 쓴다 — 웹은 고개 방향(pose)으로 확인한다
+                results, _blink, liveness, pose = self.face_conn.recv()
                 rest = core.AI_MIN_INTERVAL - (time.time() - started)
                 if rest > 0:
                     time.sleep(rest)
@@ -409,15 +445,15 @@ class AttendanceEngine:
                     if not (self.camera_on and generation == self.camera_generation):
                         continue
                     self.cached_faces = results
-                    self.last_yaw = yaw
+                    self.last_pose = pose
                     self._update_liveness_state(liveness)
                     matched_user, best_sim = self._match_faces(results, seq)
                     if self.mode in ("attendance", "lookup"):
-                        self._process_attendance(results, matched_user, yaw)
+                        self._process_attendance(results, matched_user, pose)
                     elif self.mode == "register":
-                        self._process_register(results, matched_user, yaw)
+                        self._process_register(results, matched_user, pose)
                     elif self.mode == "test":
-                        self._process_camera_test(results, matched_user, best_sim, yaw)
+                        self._process_camera_test(results, matched_user, best_sim, pose)
         except (EOFError, OSError):
             if self.is_running:
                 self.ai_failed = True
@@ -501,7 +537,7 @@ class AttendanceEngine:
             return True
         return self.challenge is not None and now - self._last_face_time < FACE_LOST_SECONDS
 
-    def _process_register(self, faces, matched_user, yaw):
+    def _process_register(self, faces, matched_user, pose):
         """[학생 등록] 탭: 고개 돌리기를 마치면 [얼굴 등록]을 눌러도 된다고 알려준다."""
         if not self._face_present(faces):
             self._reset_candidate()
@@ -515,24 +551,24 @@ class AttendanceEngine:
             return
         embedding = self._main_face(faces)
         if self.challenge is None:
-            self.challenge = TurnChallenge(embedding)
+            self.challenge = TurnChallenge(embedding, pose)
         ch = self.challenge
-        ch.update(yaw, embedding)
+        ch.update(pose, embedding)
         if ch.done_at is not None and time.time() - ch.done_at > core.HEAD_TURN_VALID_SECONDS:
-            self.challenge = ch = TurnChallenge(embedding)  # 너무 오래 지났다 — 다시 돌린다
+            self.challenge = ch = TurnChallenge(embedding, pose)  # 너무 오래 지났다 — 다시 돌린다
         if ch.done_at is None:
             self._set_card("turn", ch.instruction(), "화면의 안내를 따라 천천히 돌려 주세요",
-                           challenge=ch.to_dict(yaw))
+                           challenge=ch.to_dict(pose))
         elif not self.passes_antispoof():
             self._set_card("error", "사람 확인이 안 됩니다", self.liveness_reject_message(),
-                           challenge=ch.to_dict(yaw))
+                           challenge=ch.to_dict(pose))
         else:
             self._set_card("ok", "등록할 수 있습니다", "정면을 바라본 채 [얼굴 등록]을 눌러 주세요",
-                           challenge=ch.to_dict(yaw))
+                           challenge=ch.to_dict(pose))
 
-    def _process_attendance(self, faces, matched_user, yaw):
+    def _process_attendance(self, faces, matched_user, pose):
         """
-        같은 학생이 RECOGNIZE_HOLD_SECONDS 동안 인식되면 고개 돌리기(왼쪽·오른쪽 무작위 순서)를 시키고,
+        같은 학생이 RECOGNIZE_HOLD_SECONDS 동안 인식되면 고개 돌리기(상하좌우 중 무작위 2방향)를 시키고,
         다 돌린 뒤 정면에서 다시 그 학생으로 확인되고 위조판별까지 통과하면
         출근/퇴근을 기록하거나(attendance) 출석 현황을 보여준다(lookup).
         """
@@ -550,7 +586,7 @@ class AttendanceEngine:
             self._candidate_id = matched_user["user_id"]
             self._candidate_user = matched_user
             self._candidate_since = now
-            self.challenge = TurnChallenge(embedding)
+            self.challenge = TurnChallenge(embedding, pose)
         if self._candidate_id is None:
             self._set_card("warn", "등록되지 않은 얼굴입니다")
             return
@@ -560,14 +596,14 @@ class AttendanceEngine:
         if now - self._candidate_since < core.RECOGNIZE_HOLD_SECONDS:
             self._set_card("search", f"{name} 학생 얼굴 확인 중", "카메라를 바라봐 주세요")
             return
-        ch.update(yaw, embedding)
+        ch.update(pose, embedding)
         if ch.done_at is None:
             self._set_card("turn", f"{name} 학생, {ch.instruction()}", "화면의 안내를 따라 천천히 돌려 주세요",
-                           challenge=ch.to_dict(yaw))
+                           challenge=ch.to_dict(pose))
             return
         # 다 돌렸다 — 정면에서 같은 학생인지 다시 확인한다 (돌리는 사이 사람이 바뀌지 않았는지)
         if matched_user is None or matched_user["user_id"] != self._candidate_id:
-            self._set_card("turn", f"{name} 학생, 정면을 바라봐 주세요", "", challenge=ch.to_dict(yaw))
+            self._set_card("turn", f"{name} 학생, 정면을 바라봐 주세요", "", challenge=ch.to_dict(pose))
             return
         if not self.passes_antispoof():
             if (now - self.last_fake_time) <= core.LIVENESS_VALID_SECONDS:
@@ -587,9 +623,9 @@ class AttendanceEngine:
         self._enter("result", {"student": student, "log_type": log_type, "success": success,
                                "detail": detail, "today": core.get_today_attendance_status(student["user_id"])})
 
-    def _process_camera_test(self, faces, matched_user, best_sim, yaw):
-        # 고개 방향 값도 같이 보여준다 — HEAD_TURN_RATIO를 이 카메라에 맞게 조정할 때 참고한다
-        direction = "" if yaw is None else f" · 고개 방향 {yaw:+.2f}"
+    def _process_camera_test(self, faces, matched_user, best_sim, pose):
+        # 고개 방향 값도 같이 보여준다 — HEAD_TURN_RATIO / HEAD_PITCH_DELTA를 이 카메라에 맞게 조정할 때 참고한다
+        direction = "" if pose is None else f" · 좌우 {pose[0]:+.2f} · 상하 {pose[1]:.2f}"
         if matched_user is not None:
             self._set_card("ok", f"{self._display_name(matched_user)} 학생 인식",
                            f"유사도 {best_sim:.2f}{direction}", round(best_sim, 2))

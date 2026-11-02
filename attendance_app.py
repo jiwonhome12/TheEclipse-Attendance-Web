@@ -3081,7 +3081,7 @@ class AttendanceApp:
                     started = time.time()
                     self.face_conn.send(frame)
                     # 마지막 값(고개 방향)은 웹 버전의 고개 돌리기 확인용 — 이 화면은 눈 깜빡임을 쓴다
-                    results, blink_score, liveness, _yaw = self.face_conn.recv()
+                    results, blink_score, liveness, _pose = self.face_conn.recv()
                     # 느린 기기(라즈베리파이)에서는 분석 사이에 잠깐 쉬어서 카메라·화면이 CPU를 쓸 틈을 준다
                     rest = AI_MIN_INTERVAL - (time.time() - started)
                     if rest > 0:
