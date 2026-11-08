@@ -53,9 +53,17 @@
             <small id="student-count" class="muted"></small>
           </div>
           <div class="head-actions">
+            <button class="ghost" id="btn-shortfall">주간 미달자</button>
             <a class="ghost" href="/api/admin/export.xlsx" id="btn-export">엑셀 저장</a>
             <button class="ghost danger" id="btn-delete">선택 삭제</button>
           </div>
+        </div>
+        <div class="list-tools">
+          <input type="search" id="student-search" placeholder="이름 · 학번 · 전화번호 · 전공으로 검색" aria-label="학생 검색">
+          <span class="presence-legend">
+            <span><i class="led on"></i>출근 중 <b id="working-count">0</b></span>
+            <span><i class="led missing"></i>퇴근 누락 <b id="missing-count">0</b></span>
+          </span>
         </div>
         <div class="table-wrap">
           <table class="data">
@@ -63,6 +71,7 @@
               <tr>
                 <th class="check"><input type="checkbox" id="check-all" aria-label="모두 선택"></th>
                 <th>학번</th><th>이름</th><th>전공</th><th>패널티</th><th>전화 번호</th><th>학년</th>
+                <th class="timeline-col">오늘 (06~24시)</th><th class="led-col">상태</th>
               </tr>
             </thead>
             <tbody id="student-rows"></tbody>
@@ -81,6 +90,16 @@
           <label>패널티<input name="penalty" inputmode="numeric"></label>
         </div>
         <button class="primary wide" type="submit">수정 완료</button>
+
+        <div id="checkout-box" class="checkout-box" hidden>
+          <hr>
+          <h3>퇴근 처리</h3>
+          <small class="muted">퇴근을 찍지 않은 출근 기록에 퇴근 시각을 넣습니다. 출근한 날짜 안에서만 정할 수 있고, 관리자 처리로 기록에 남습니다.</small>
+          <label>퇴근을 넣을 출근 기록<select id="checkout-session"></select></label>
+          <label>퇴근 시각<input type="time" id="checkout-time" step="60"></label>
+          <small id="checkout-hint" class="muted"></small>
+          <button type="button" class="primary wide" id="btn-checkout">퇴근 처리</button>
+        </div>
       </form>
     </section>
 
@@ -97,7 +116,19 @@
             <p id="register-detail" class="muted"></p>
           </div>
         </div>
-        <div id="register-turn" class="turn-guide card" hidden></div>
+      </div>
+      <div id="register-side" class="register-side">
+      <!-- 고개 돌리기 중에는 입력 카드 대신 이 안내가 나오고, 다 돌리면 입력 카드로 돌아간다 -->
+      <div id="register-guide" class="card side-card register-guide" hidden>
+        <div class="card-head">
+          <div>
+            <h3>고개 돌리기</h3>
+            <small class="muted">등록할 학생이 안내대로 고개를 돌리면 입력 화면으로 돌아갑니다</small>
+          </div>
+          <button type="button" class="ghost" id="btn-recenter" title="지금 학생의 고개 방향을 방향 판의 가운데(정면)로 다시 잡습니다">초점 맞추기</button>
+        </div>
+        <div id="register-turn" class="turn-guide"></div>
+        <small class="muted recenter-note">점이 가운데로 안 오면, 학생이 카메라를 편하게 바라본 상태에서 [초점 맞추기]를 누르세요.</small>
       </div>
       <form id="register-form" class="card side-card">
         <h3>학생 얼굴 및 상세 정보 등록</h3>
@@ -119,6 +150,7 @@
         </div>
         <button class="primary wide big" type="submit">얼굴 등록</button>
       </form>
+      </div>
     </section>
 
     <!-- 전체 출결로그 -->
@@ -190,6 +222,25 @@
   <dialog id="photo-dialog">
     <img id="photo-img" alt="출퇴근 사진">
     <p id="photo-caption"></p>
+    <form method="dialog"><button class="primary">닫기</button></form>
+  </dialog>
+
+  <!-- 주간 미달자 -->
+  <dialog id="shortfall-dialog" class="shortfall-dialog">
+    <div class="card-head">
+      <div>
+        <h3>주간 조건 미달자</h3>
+        <small id="shortfall-desc" class="muted"></small>
+      </div>
+      <label class="inline-label">기준일<input type="date" id="shortfall-date"></label>
+    </div>
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>학번</th><th>이름</th><th>출근 일수</th><th>출석 시간</th><th>부족한 일수</th><th>부족한 시간</th></tr></thead>
+        <tbody id="shortfall-rows"></tbody>
+      </table>
+    </div>
+    <p id="shortfall-result" class="log-result"></p>
     <form method="dialog"><button class="primary">닫기</button></form>
   </dialog>
 

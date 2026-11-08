@@ -97,6 +97,39 @@ def students(_admin=Depends(require_admin)):
     return [dict(zip(STUDENT_KEYS, row)) for row in core.list_students()]
 
 
+@router.get("/presence")
+def presence(_admin=Depends(require_admin)):
+    """
+    학생별 오늘 출퇴근 상태 (출근 중 LED · 타임라인 · 퇴근 누락). 화면이 열려 있는 동안 몇십 초마다 부른다.
+    지금 시각도 같이 보내서, 다른 기기에서 열어도 그 기기 시계가 아니라 서버 시계로 경과 시간을 센다.
+    """
+    now = datetime.now()
+    return {"now": now.isoformat(timespec="seconds"), "date": now.strftime("%Y-%m-%d"),
+            "students": core.student_presence(now)}
+
+
+class CheckoutRequest(BaseModel):
+    date: str        # 출근한 날짜 YYYY-MM-DD
+    check_in: str    # 퇴근을 넣을 출근 시각 HH:MM:SS
+    check_out: str   # 넣을 퇴근 시각 HH:MM 또는 HH:MM:SS
+
+
+@router.post("/students/{student_id}/checkout")
+def manual_checkout(student_id: str, req: CheckoutRequest, admin_id: str = Depends(require_admin)):
+    try:
+        time_str = core.manual_checkout(student_id, req.date, req.check_in, req.check_out, admin_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"check_out": time_str}
+
+
+@router.get("/weekly-shortfall")
+def weekly_shortfall(base: date | None = None, _admin=Depends(require_admin)):
+    monday, sunday, rows = core.weekly_shortfall(base)
+    return {"start": monday, "end": sunday, "rows": rows,
+            "required_days": core.WEEKLY_REQUIRED_DAYS, "required_seconds": core.WEEKLY_REQUIRED_SECONDS}
+
+
 class StudentUpdate(BaseModel):
     name: str
     major: str
@@ -157,6 +190,16 @@ def keep_register_camera(request: Request, _admin=Depends(require_admin)):
 @router.post("/register/camera/stop")
 def stop_register_camera(request: Request, _admin=Depends(require_admin)):
     engine_of(request).stop_register_camera()
+    return {}
+
+
+@router.post("/register/recenter")
+def recenter_register(request: Request, _admin=Depends(require_admin)):
+    """[초점 맞추기] — 지금 학생의 고개 방향을 정면 기준점으로 다시 잡는다."""
+    try:
+        engine_of(request).recenter_register()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return {}
 
 

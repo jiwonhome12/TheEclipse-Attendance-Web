@@ -1145,6 +1145,11 @@ def init_db():
         cursor.execute("ALTER TABLE attendance_logs ADD COLUMN photo_path TEXT")
     except sqlite3.OperationalError:
         pass
+    # 관리자가 손으로 넣은 기록(퇴근 누락 처리 등)이면 그 관리자 아이디. 카메라로 찍은 기록은 NULL
+    try:
+        cursor.execute("ALTER TABLE attendance_logs ADD COLUMN edited_by TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     # 예전 기본 관리자 계정(dongseo@mail.com / admin1234)이 남아 있으면 새 계정으로 바꾼다
     cursor.execute("SELECT id FROM users WHERE user_id = '1234'")
@@ -1398,7 +1403,7 @@ def log_period(mode, start, end, today=None):
 def query_log_rows(start, end, keyword=""):
     """기간 안의 출근/퇴근 기록 (최근 것이 먼저). keyword는 이름 또는 학번 일부."""
     query = """
-        SELECT a.user_id, a.name, a.log_type, a.log_date, a.log_time, a.photo_path, u.penalty
+        SELECT a.user_id, a.name, a.log_type, a.log_date, a.log_time, a.photo_path, u.penalty, a.edited_by
         FROM attendance_logs a
         LEFT JOIN users u ON u.user_id = a.user_id
         WHERE a.log_date BETWEEN ? AND ?
@@ -1411,7 +1416,7 @@ def query_log_rows(start, end, keyword=""):
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(query, params).fetchall()
     conn.close()
-    keys = ("user_id", "name", "log_type", "log_date", "log_time", "photo_path", "penalty")
+    keys = ("user_id", "name", "log_type", "log_date", "log_time", "photo_path", "penalty", "edited_by")
     # 00:00~06:00 기록(valid=False)은 일수/시간 계산에서 빠진다
     return [dict(zip(keys, row), valid=is_valid_attendance_time(row[4])) for row in rows]
 
@@ -1441,6 +1446,131 @@ def list_students():
     rows = conn.execute("SELECT user_id, name, major, penalty, phone, grade FROM users WHERE role = 'student'").fetchall()
     conn.close()
     return rows
+
+
+MISSING_CHECKOUT_DAYS = 30  # 퇴근 누락(출근만 찍힌 기록)을 이 기간 안에서 찾는다
+
+
+def student_presence(now=None):
+    """
+    학생별 오늘 출퇴근 상태 — 관리자 [학생 현황/수정]의 LED·타임라인과 퇴근 처리에 쓴다.
+    반환: {학번: {"today": [{"check_in", "check_out"}], "working_since": "HH:MM:SS" | None,
+                 "missing": [{"date", "check_in"}]}}
+    - working_since: 오늘 마지막 기록이 출근이면 그 시각 (get_today_attendance_status와 같은 기준)
+    - missing: 최근 MISSING_CHECKOUT_DAYS일 안에서 퇴근 없이 끝난 출근 (지금 출근 중인 것은 빼고)
+    00:00~06:00 기록은 인정되지 않으므로 뺀다. 기록이 없는 학생은 넣지 않는다.
+    """
+    now = now or datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    since = (now - timedelta(days=MISSING_CHECKOUT_DAYS)).strftime("%Y-%m-%d")
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("""
+        SELECT user_id, name, log_date, log_type, log_time
+        FROM attendance_logs
+        WHERE log_date BETWEEN ? AND ?
+    """, (since, today)).fetchall()
+    conn.close()
+
+    logs_by_user = {}
+    for row in rows:
+        if row[0] and is_valid_attendance_time(row[4]):
+            logs_by_user.setdefault(str(row[0]), []).append(row)
+
+    presence = {}
+    for user_id, logs in logs_by_user.items():
+        sessions = pair_attendance_sessions(logs)
+        today_logs = sorted((log for log in logs if log[2] == today), key=lambda log: log[4])
+        working_since = today_logs[-1][4] if today_logs and today_logs[-1][3] == "CHECK_IN" else None
+        presence[user_id] = {
+            "today": [{"check_in": s["check_in"], "check_out": s["check_out"]}
+                      for s in sessions if s["date"] == today and s["check_in"]],
+            "working_since": working_since,
+            "missing": [{"date": s["date"], "check_in": s["check_in"]} for s in sessions
+                        if s["check_in"] and not s["check_out"]
+                        and not (s["date"] == today and s["check_in"] == working_since)],
+        }
+    return presence
+
+
+def _normalize_time(value):
+    """'HH:MM' 또는 'HH:MM:SS'를 'HH:MM:SS'로. 형식이 틀리면 ValueError."""
+    value = (value or "").strip()
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(value, fmt).strftime("%H:%M:%S")
+        except ValueError:
+            continue
+    raise ValueError("시간을 HH:MM 형식으로 넣어주세요.")
+
+
+def manual_checkout(user_id, log_date, check_in_time, checkout_time, admin_id, now=None):
+    """
+    퇴근을 안 찍은 출근 기록에 관리자가 정한 시각으로 퇴근을 넣는다.
+    출근과 같은 날짜에만 넣을 수 있다 (출퇴근 시간은 날짜별로 짝을 지어 계산하므로).
+    반환: 넣은 퇴근 시각 "HH:MM:SS". 넣을 수 없으면 ValueError(이유).
+    """
+    now = now or datetime.now()
+    try:
+        day = datetime.strptime(log_date, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        raise ValueError("날짜가 올바르지 않습니다.")
+    check_in_time = _normalize_time(check_in_time)
+    checkout_time = _normalize_time(checkout_time)
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        user = conn.execute("SELECT name FROM users WHERE user_id = ? AND role = 'student'", (user_id,)).fetchone()
+        if not user:
+            raise ValueError("등록된 학생이 아닙니다.")
+        logs = conn.execute("""
+            SELECT user_id, name, log_date, log_type, log_time
+            FROM attendance_logs WHERE user_id = ? AND log_date = ?
+        """, (user_id, log_date)).fetchall()
+        valid_logs = [log for log in logs if is_valid_attendance_time(log[4])]
+        session = next((s for s in pair_attendance_sessions(valid_logs)
+                        if s["check_in"] == check_in_time and not s["check_out"]), None)
+        if session is None:
+            raise ValueError("퇴근을 넣을 출근 기록이 없습니다. 이미 퇴근 처리되었을 수 있습니다.")
+
+        if checkout_time <= check_in_time:
+            raise ValueError(f"퇴근 시각은 출근 시각({check_in_time})보다 늦어야 합니다.")
+        if day > now.date() or (day == now.date() and checkout_time > now.strftime("%H:%M:%S")):
+            raise ValueError("아직 지나지 않은 시각으로는 퇴근 처리할 수 없습니다.")
+        # 이 출근 다음에 찍힌 기록보다 늦으면 출근→퇴근 짝이 엉키므로 그 앞까지만 받는다
+        later = sorted(log[4] for log in valid_logs if log[4] > check_in_time)
+        if later and checkout_time >= later[0]:
+            raise ValueError(f"퇴근 시각은 그 다음 기록({later[0]})보다 앞서야 합니다.")
+
+        conn.execute("""
+            INSERT INTO attendance_logs (user_id, name, log_type, log_date, log_time, photo_path, edited_by)
+            VALUES (?, ?, 'CHECK_OUT', ?, ?, NULL, ?)
+        """, (user_id, user[0], log_date, checkout_time, admin_id))
+        conn.commit()
+    finally:
+        conn.close()
+    export_attendance_json()  # 창공시스템 출결 파일도 바로 갱신
+    return checkout_time
+
+
+def weekly_shortfall(base=None):
+    """
+    base가 속한 주(월~일)에 주 3회 · 20시간을 아직 못 채운 등록 학생 목록. 부족한 시간이 많은 순.
+    각 항목: user_id, name, days, seconds, missing_days, missing_seconds
+    """
+    base = base or date.today()
+    monday = base - timedelta(days=base.weekday())
+    sunday = monday + timedelta(days=6)
+    registered = {str(row[0]) for row in list_students()}
+    rows = []
+    for s in get_attendance_summary_by_student(monday.isoformat(), sunday.isoformat()):
+        if s["user_id"] not in registered:
+            continue  # 삭제된 학생의 옛 기록은 빼고 본다
+        missing_days = max(0, WEEKLY_REQUIRED_DAYS - s["days"])
+        missing_seconds = max(0, WEEKLY_REQUIRED_SECONDS - s["seconds"])
+        if missing_days or missing_seconds:
+            rows.append(dict(s, missing_days=missing_days, missing_seconds=missing_seconds))
+    rows.sort(key=lambda s: (-s["missing_seconds"], -s["missing_days"], s["name"]))
+    return monday, sunday, rows
 
 
 def update_student(student_id, name, major, penalty, phone, grade):

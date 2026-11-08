@@ -108,8 +108,86 @@ table.data input[type="checkbox"] { width: 18px; height: 18px; }
   padding: 14px 18px;
 }
 .register-status p { margin: 4px 0 0; white-space: pre-line; }
+/* 넓은 화면: 출석 화면의 [카메라 테스트]와 같은 비율 — 영상 2 : 오른쪽 카드 1 (style.css .test).
+   왼쪽(영상 + 상태 줄)은 오른쪽 카드 높이에 맞춰 늘어나고, 영상은 잘리지 않게 칸 안에 통째로 들어간다 */
+@media (min-width: 761px) {
+  #tab-register { grid-template-columns: 2fr 1fr; gap: 24px; max-width: 1400px; margin: 0 auto; align-items: stretch; }
+  #tab-register .video-box { flex: 1; aspect-ratio: auto; }
+  #tab-register .register-side > .card { flex: 1; }
+}
+/* 오른쪽 칸: 입력 카드 ↔ 고개 돌리기 안내 (같은 높이로 바뀐다) */
+.register-side { display: flex; flex-direction: column; min-width: 0; container-type: inline-size; }
+/* 오른쪽 칸이 좁으면(7:3) 얼굴 그림과 방향 판이 위아래로 쌓여 카드가 길어지므로, 줄여서 나란히 둔다 */
+@container (max-width: 540px) {
+  .register-guide .tg-body { zoom: 0.72; gap: 20px; flex-wrap: nowrap; }
+  .register-guide .tg-steps { zoom: 0.85; }
+}
+.register-guide { min-height: var(--reg-side-h, 0); justify-content: space-between; }
+.register-guide .card-head { margin-bottom: 0; }
+.register-guide .turn-guide { margin: 8px auto 0; width: 100%; }
+.register-guide .tg-body { gap: 28px; }
+.register-guide .tg-steps { margin-top: 18px; }
+.recenter-note { text-align: center; }
+#btn-recenter { white-space: nowrap; flex: none; }
 .visual.small { width: 56px; height: 56px; margin: 0; font-size: 26px; flex: none; }
 .visual.small.spin::after { width: 28px; height: 28px; border-width: 4px; }
+
+/* ---------- 검색 · 출근 상태 ---------- */
+.list-tools { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; }
+.list-tools input[type="search"] { flex: 1; min-width: 220px; }
+.presence-legend { display: flex; gap: 14px; font-size: 13px; color: var(--text-sub); white-space: nowrap; }
+.presence-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.presence-legend b { color: var(--text); font-variant-numeric: tabular-nums; }
+
+.led {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #CFCCC4;
+  box-shadow: inset 0 -2px 3px rgba(0, 0, 0, 0.15);
+  vertical-align: middle;
+}
+.led.on {
+  background: radial-gradient(circle at 35% 35%, #7CF0A4, var(--ok) 60%);
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.18), 0 0 10px rgba(22, 163, 74, 0.6);
+  animation: led-pulse 2.4s ease-in-out infinite;
+}
+.led.missing { background: radial-gradient(circle at 35% 35%, #FFD27A, #E59A12 60%); }
+@keyframes led-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.18), 0 0 10px rgba(22, 163, 74, 0.6); }
+  50% { box-shadow: 0 0 0 6px rgba(22, 163, 74, 0.06), 0 0 14px rgba(22, 163, 74, 0.35); }
+}
+@media (prefers-reduced-motion: reduce) { .led.on { animation: none; } }
+table.data .led-col { width: 56px; }
+
+/* 오늘 타임라인 — 06~24시 막대 */
+table.data .timeline-col { width: 230px; min-width: 200px; }
+.tl-bar {
+  position: relative;
+  height: 10px;
+  border-radius: 5px;
+  background: repeating-linear-gradient(90deg, var(--panel-alt) 0 calc(100% / 6 - 1px), var(--line) calc(100% / 6 - 1px) calc(100% / 6));
+  overflow: hidden;
+}
+.tl-seg { position: absolute; top: 0; bottom: 0; border-radius: 5px; background: #8FA6D9; }
+.tl-seg.live { background: var(--ok); }
+.tl-seg.dot { width: 4px; background: #E59A12; }
+.tl-label { margin-top: 5px; font-size: 12px; color: var(--text-sub); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-label b { color: var(--text); }
+.tl-empty { font-size: 13px; }
+table.data tbody tr.selected .tl-label { color: var(--blue-dark); }
+
+/* ---------- 퇴근 처리 ---------- */
+.checkout-box { display: flex; flex-direction: column; gap: 10px; }
+.checkout-box h3 { font-size: 18px !important; }
+
+/* ---------- 주간 미달자 ---------- */
+.shortfall-dialog { width: min(92vw, 860px); text-align: left; }
+.shortfall-dialog .table-wrap { max-height: 60vh; }
+.shortfall-dialog form { text-align: right; margin-top: 12px; }
+.shortfall-dialog td.short { color: var(--err); font-weight: 700; }
+.inline-label { flex-direction: row; align-items: center; gap: 8px; }
 
 /* ---------- 출결로그 ---------- */
 .chips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }

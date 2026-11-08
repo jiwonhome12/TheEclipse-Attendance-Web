@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import multiprocessing
 import os
+import re
 import sys
 from contextlib import asynccontextmanager
 
@@ -20,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import core  # noqa: E402
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect  # noqa: E402
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse  # noqa: E402
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
@@ -43,15 +44,44 @@ async def lifespan(_app):
     engine.close()
 
 
+class RevalidatedStaticFiles(StaticFiles):
+    """
+    화면 파일(css/js/이미지)을 쓸 때마다 바뀌었는지 서버에 확인하게 한다 (Cache-Control: no-cache).
+    이게 없으면 브라우저가 옛 파일을 알아서 한동안 재사용해서, 업데이트해도 화면이 그대로인 일이 생긴다.
+    안 바뀌었으면 서버는 내용 없이 304만 돌려주므로 부담은 거의 없다.
+    """
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 app = FastAPI(title="창의공간 출석체크", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-app.mount("/assets", StaticFiles(directory=os.path.join(core.RESOURCE_DIR, "assets")), name="assets")
+app.mount("/static", RevalidatedStaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/assets", RevalidatedStaticFiles(directory=os.path.join(core.RESOURCE_DIR, "assets")), name="assets")
 app.include_router(admin_api.router)
 app.include_router(staff_auth.router)
 
 
 # 로그인 여부에 따라 달라지는 페이지 — 브라우저가 저장해 둔 화면을 그대로 띄우면 로그아웃해도 출석 화면이 보인다
 NO_STORE = {"Cache-Control": "no-store"}
+STATIC_REF = re.compile(r'(/static/[\w.-]+\.(?:css|js))"')
+
+
+def page(name, headers):
+    """
+    화면 HTML. css/js 주소 뒤에 파일 수정 시각(?v=...)을 붙여서,
+    파일을 고치면 주소가 바뀌어 브라우저가 옛 파일을 절대 다시 쓰지 않게 한다.
+    """
+    with open(os.path.join(STATIC_DIR, name), encoding="utf-8") as f:
+        html = f.read()
+
+    def versioned(m):
+        path = os.path.join(STATIC_DIR, m.group(1)[len("/static/"):])
+        version = int(os.path.getmtime(path)) if os.path.exists(path) else 0
+        return f'{m.group(1)}?v={version}"'
+
+    return HTMLResponse(STATIC_REF.sub(versioned, html), headers=headers)
 
 
 @app.get("/")
@@ -59,19 +89,19 @@ def index(request: Request):
     # 조교가 로그인해야 출석 화면이 열린다
     if staff_auth.staff_session(request) is None:
         return RedirectResponse("/login", headers=NO_STORE)
-    return FileResponse(os.path.join(STATIC_DIR, "index.html"), headers=NO_STORE)
+    return page("index.html", NO_STORE)
 
 
 @app.get("/login")
 def login_page(request: Request):
     if staff_auth.staff_session(request) is not None:
         return RedirectResponse("/", headers=NO_STORE)
-    return FileResponse(os.path.join(STATIC_DIR, "login.html"), headers=NO_STORE)
+    return page("login.html", NO_STORE)
 
 
 @app.get("/admin")
 def admin_page():
-    return FileResponse(os.path.join(STATIC_DIR, "admin.html"))
+    return page("admin.html", NO_STORE)
 
 
 @app.get("/api/state")

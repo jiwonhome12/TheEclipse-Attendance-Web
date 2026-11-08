@@ -94,35 +94,256 @@ function selectTab(name) {
 for (const btn of document.querySelectorAll(".tab")) btn.addEventListener("click", () => selectTab(btn.dataset.tab));
 
 // ---------- 학생 현황/수정 ----------
+// 출근 중 LED · 오늘 타임라인은 서버에 /presence를 PRESENCE_POLL_MS마다 한 번 묻고,
+// 1초마다 흐르는 경과 시간은 브라우저가 혼자 센다 (서버에 매초 묻지 않는다).
+const PRESENCE_POLL_MS = 20000;
+const DAY_START_MIN = 6 * 60, DAY_END_MIN = 24 * 60;  // 타임라인 06:00~24:00 (00~06시 기록은 인정 안 됨)
+
 let students = [];
 let selectedStudent = null;
+let presence = { students: {}, date: "" };
+let serverOffsetMs = 0;          // 서버 시계 − 이 기기 시계
+let presenceTimer = null;
+const checkedIds = new Set();    // 30초마다 표를 다시 그려도 체크한 학생은 그대로 둔다
+
+const serverNow = () => new Date(Date.now() + serverOffsetMs);
+const pad2 = (n) => String(n).padStart(2, "0");
+const ymd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const toMin = (hms) => { const [h, m, s] = hms.split(":").map(Number); return h * 60 + m + (s || 0) / 60; };
+const nowMin = () => { const n = serverNow(); return n.getHours() * 60 + n.getMinutes() + n.getSeconds() / 60; };
+const hhmm = (hms) => hms.slice(0, 5);
+const statusOf = (id) => presence.students[id] || { today: [], working_since: null, missing: [] };
 
 async function loadStudents() {
-  students = await api("/students");
+  [students] = await Promise.all([api("/students"), loadPresence()]);
   selectedStudent = null;
+  checkedIds.clear();
   $("edit-form").reset();
+  renderCheckout();
   $("check-all").checked = false;
-  $("student-count").textContent = `등록된 학생 ${students.length}명 · 체크한 학생은 [선택 삭제]로 지웁니다`;
-  $("student-rows").innerHTML = students.map((s, i) => `
-    <tr data-index="${i}">
-      <td class="check"><input type="checkbox" data-id="${esc(s.user_id)}"></td>
-      <td>${esc(s.user_id)}</td><td>${esc(s.name)}</td><td>${esc(s.major)}</td>
-      <td>${esc(s.penalty)}</td><td>${esc(s.phone)}</td><td>${esc(s.grade)}</td>
-    </tr>`).join("") || '<tr><td colspan="7" class="muted">등록된 학생이 없습니다</td></tr>';
+  renderStudents();
+  markShortfallButton();
+  startPresencePolling();
 }
 
+async function loadPresence() {
+  const before = Date.now();
+  const res = await api("/presence");
+  serverOffsetMs = new Date(res.now).getTime() - (before + Date.now()) / 2;
+  presence = res;
+}
+
+function startPresencePolling() {
+  clearInterval(presenceTimer);
+  presenceTimer = setInterval(() => {
+    if (currentTab !== "students" || document.hidden) return;  // 다른 탭·창을 보는 동안은 묻지 않는다
+    refreshPresence().catch(() => {});
+  }, PRESENCE_POLL_MS);
+}
+
+async function refreshPresence() {
+  await loadPresence();
+  renderStudents();
+  if (selectedStudent) renderCheckout();
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && currentTab === "students") refreshPresence().catch(() => {});
+});
+
+// 검색 — 이름·학번·전공은 글자 일부, 전화번호는 '-' 없이 숫자만 비교한다
+function matchesSearch(s, q) {
+  if (!q) return true;
+  const digits = q.replace(/\D/g, "");
+  return [s.user_id, s.name, s.major, s.grade].some((v) => String(v ?? "").toLowerCase().includes(q))
+    || (digits.length >= 2 && String(s.phone ?? "").replace(/\D/g, "").includes(digits))
+    || String(s.phone ?? "").includes(q);
+}
+
+function renderStudents() {
+  const q = $("student-search").value.trim().toLowerCase();
+  // 출근 중인 학생이 맨 위(먼저 온 순), 그다음 퇴근 누락, 나머지는 원래 순서
+  const rank = (s) => { const st = statusOf(s.user_id); return st.working_since ? 0 : st.missing.length ? 1 : 2; };
+  const shown = students
+    .map((s, i) => ({ s, i }))
+    .filter(({ s }) => matchesSearch(s, q))
+    .sort((a, b) => rank(a.s) - rank(b.s)
+      || (statusOf(a.s.user_id).working_since || "").localeCompare(statusOf(b.s.user_id).working_since || "")
+      || a.i - b.i)
+    .map(({ s }) => s);
+
+  const working = students.filter((s) => statusOf(s.user_id).working_since).length;
+  const missing = students.filter((s) => statusOf(s.user_id).missing.length).length;
+  $("working-count").textContent = working;
+  $("missing-count").textContent = missing;
+  $("student-count").textContent = q
+    ? `검색 결과 ${shown.length}명 / 등록된 학생 ${students.length}명`
+    : `등록된 학생 ${students.length}명 · 체크한 학생은 [선택 삭제]로 지웁니다`;
+
+  $("student-rows").innerHTML = shown.map((s) => {
+    const st = statusOf(s.user_id);
+    const led = st.working_since ? "on" : st.missing.length ? "missing" : "";
+    const ledTitle = st.working_since ? `출근 중 (${st.working_since} 출근)`
+      : st.missing.length ? `퇴근 누락 ${st.missing.length}건 — 학생을 고르면 퇴근 처리할 수 있습니다` : "출근 전 / 퇴근함";
+    return `
+    <tr data-id="${esc(s.user_id)}" class="${selectedStudent?.user_id === s.user_id ? "selected" : ""}">
+      <td class="check"><input type="checkbox" data-id="${esc(s.user_id)}" ${checkedIds.has(s.user_id) ? "checked" : ""}></td>
+      <td>${esc(s.user_id)}</td><td>${esc(s.name)}</td><td>${esc(s.major)}</td>
+      <td>${esc(s.penalty)}</td><td>${esc(s.phone)}</td><td>${esc(s.grade)}</td>
+      <td class="timeline-col">${timelineHtml(st)}</td>
+      <td class="led-col"><i class="led ${led}" title="${esc(ledTitle)}" aria-label="${esc(ledTitle)}"></i></td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="9" class="muted">${q ? "검색 결과가 없습니다" : "등록된 학생이 없습니다"}</td></tr>`;
+  $("check-all").checked = shown.length > 0 && shown.every((s) => checkedIds.has(s.user_id));
+  tickLive();
+}
+
+// 오늘 출퇴근을 06~24시 막대 위에 칠한다. 출근 중인 구간은 지금 시각까지 늘어난다 (tickLive)
+function timelineHtml(st) {
+  if (!st.today.length) return '<span class="muted tl-empty">—</span>';
+  const span = DAY_END_MIN - DAY_START_MIN;
+  const pct = (m) => (Math.min(Math.max(m, DAY_START_MIN), DAY_END_MIN) - DAY_START_MIN) / span * 100;
+  const segs = st.today.map((x) => {
+    const start = toMin(x.check_in);
+    const live = !x.check_out && x.check_in === st.working_since;
+    if (!x.check_out && !live) {  // 퇴근 없이 끝난 앞 출근 — 점으로만 표시
+      return `<span class="tl-seg dot" style="left:${pct(start)}%" title="${hhmm(x.check_in)} 출근 · 퇴근 기록 없음"></span>`;
+    }
+    const end = live ? nowMin() : toMin(x.check_out);
+    const title = live ? `${hhmm(x.check_in)} 출근 · 출근 중` : `${hhmm(x.check_in)} ~ ${hhmm(x.check_out)}`;
+    return `<span class="tl-seg ${live ? "live" : ""}" ${live ? `data-start="${start}"` : ""}
+      style="left:${pct(start)}%;width:${Math.max(pct(end) - pct(start), 0.6)}%" title="${title}"></span>`;
+  }).join("");
+  const label = st.working_since
+    ? `<b>${hhmm(st.working_since)}</b> 출근 · <span data-since="${st.working_since}"></span>`
+    : `${st.today.length}회 · ${st.today.filter((x) => x.check_out).map((x) => `${hhmm(x.check_in)}~${hhmm(x.check_out)}`).join(", ") || "퇴근 기록 없음"}`;
+  return `<div class="tl-bar">${segs}</div><div class="tl-label">${label}</div>`;
+}
+
+// 1초마다 — 출근 중인 학생의 경과 시간과 막대 길이만 고친다 (서버에 묻지 않는다)
+function tickLive() {
+  const now = nowMin(), span = DAY_END_MIN - DAY_START_MIN;
+  for (const el of document.querySelectorAll("#student-rows [data-since]")) {
+    el.textContent = duration((now - toMin(el.dataset.since)) * 60);
+  }
+  for (const el of document.querySelectorAll("#student-rows .tl-seg.live")) {
+    const start = Number(el.dataset.start);
+    el.style.width = `${Math.max((Math.min(now, DAY_END_MIN) - start) / span * 100, 0.6)}%`;
+  }
+}
+setInterval(() => { if (currentTab === "students" && !document.hidden) tickLive(); }, 1000);
+
+// 날짜가 바뀌면(자정) 오늘 기준이 달라지므로 바로 다시 읽는다
+setInterval(() => {
+  if (currentTab === "students" && presence.date && ymd(serverNow()) !== presence.date) {
+    refreshPresence().then(markShortfallButton).catch(() => {});
+  }
+}, 60000);
+
+$("student-search").addEventListener("input", renderStudents);
+
 $("student-rows").addEventListener("click", (e) => {
-  const row = e.target.closest("tr[data-index]");
-  if (!row || e.target.matches("input[type=checkbox]")) return;
+  const row = e.target.closest("tr[data-id]");
+  if (!row) return;
+  if (e.target.matches("input[type=checkbox]")) {
+    if (e.target.checked) checkedIds.add(row.dataset.id); else checkedIds.delete(row.dataset.id);
+    return;
+  }
   for (const r of $("student-rows").children) r.classList.toggle("selected", r === row);
-  selectedStudent = students[row.dataset.index];
+  selectedStudent = students.find((s) => s.user_id === row.dataset.id);
   const form = $("edit-form");
   for (const key of ["user_id", "name", "major", "phone", "grade", "penalty"]) form.elements[key].value = selectedStudent[key] ?? "";
+  renderCheckout(true);
 });
 
 $("check-all").addEventListener("change", (e) => {
-  for (const box of $("student-rows").querySelectorAll("input[type=checkbox]")) box.checked = e.target.checked;
+  for (const box of $("student-rows").querySelectorAll("input[type=checkbox]")) {
+    box.checked = e.target.checked;
+    if (e.target.checked) checkedIds.add(box.dataset.id); else checkedIds.delete(box.dataset.id);
+  }
 });
+
+// ---------- 퇴근 처리 ----------
+let checkoutKey = "";  // 고른 학생의 미퇴근 목록 — 바뀌었을 때만 다시 그려서 고르던 값을 지키지 않게
+function renderCheckout(force = false) {
+  const box = $("checkout-box");
+  const st = selectedStudent ? statusOf(selectedStudent.user_id) : null;
+  const open = st ? [
+    ...(st.working_since ? [{ date: presence.date, check_in: st.working_since, now: true }] : []),
+    ...[...st.missing].reverse(),  // 최근 것부터
+  ] : [];
+  const key = `${selectedStudent?.user_id}|${open.map((o) => o.date + o.check_in).join(",")}`;
+  if (!force && key === checkoutKey) return;
+  checkoutKey = key;
+  box.hidden = !open.length;
+  if (!open.length) return;
+  $("checkout-session").innerHTML = open.map((o, i) =>
+    `<option value="${i}" data-date="${o.date}" data-in="${o.check_in}">${dateKo(o.date)} ${hhmm(o.check_in)} 출근 ${o.now ? "· 지금 출근 중" : "· 퇴근 기록 없음"}</option>`).join("");
+  syncCheckoutTime();
+}
+
+function syncCheckoutTime() {
+  const opt = $("checkout-session").selectedOptions[0];
+  if (!opt) return;
+  const isToday = opt.dataset.date === presence.date;
+  const nowHm = `${pad2(serverNow().getHours())}:${pad2(serverNow().getMinutes())}`;
+  const input = $("checkout-time");
+  input.min = hhmm(opt.dataset.in);
+  input.max = isToday ? nowHm : "23:59";
+  input.value = isToday ? nowHm : "";
+  $("checkout-hint").textContent = `${hhmm(opt.dataset.in)} 이후 ~ ${isToday ? `지금(${nowHm})` : "23:59"} 사이로 정하세요. `
+    + "그날 이 출근 뒤에 다른 기록이 있으면 그 앞까지만 됩니다.";
+}
+$("checkout-session").addEventListener("change", syncCheckoutTime);
+
+$("btn-checkout").addEventListener("click", guarded(async () => {
+  const opt = $("checkout-session").selectedOptions[0];
+  const time = $("checkout-time").value;
+  if (!selectedStudent || !opt) throw new Error("퇴근 처리할 학생을 리스트에서 선택하세요.");
+  if (!time) throw new Error("퇴근 시각을 정하세요.");
+  const who = `${selectedStudent.name} (${selectedStudent.user_id})`;
+  if (!confirm(`${who}\n${dateKo(opt.dataset.date)} ${hhmm(opt.dataset.in)} 출근 → ${time} 퇴근으로 처리할까요?\n관리자 처리 기록으로 남습니다.`)) return;
+  const res = await api(`/students/${encodeURIComponent(selectedStudent.user_id)}/checkout`, {
+    method: "POST", body: { date: opt.dataset.date, check_in: opt.dataset.in, check_out: time },
+  });
+  toast(`${selectedStudent.name} 학생을 ${res.check_out}에 퇴근 처리했습니다.`);
+  await refreshPresence();
+  renderCheckout(true);
+}));
+
+// ---------- 주간 미달자 ----------
+const isThursday = () => serverNow().getDay() === 4;
+
+function markShortfallButton() {
+  const btn = $("btn-shortfall");
+  btn.classList.toggle("primary", isThursday());
+  btn.classList.toggle("ghost", !isThursday());
+  btn.textContent = isThursday() ? "주간 미달자 · 오늘 목요일" : "주간 미달자";
+}
+
+async function loadShortfall() {
+  const base = $("shortfall-date").value;
+  const res = await api(`/weekly-shortfall${base ? `?base=${base}` : ""}`);
+  const hours = res.required_seconds / 3600;
+  $("shortfall-desc").textContent = `${dateKo(res.start)} ~ ${dateKo(res.end)} · 주 ${res.required_days}회 · ${hours}시간 중 하나라도 못 채운 학생`;
+  $("shortfall-rows").innerHTML = res.rows.map((s) => {
+    const working = statusOf(s.user_id).working_since && res.start <= presence.date && presence.date <= res.end;
+    return `<tr>
+      <td>${esc(s.user_id)}</td><td>${esc(s.name)}${working ? ' <i class="led on" title="지금 출근 중 (진행 중인 시간은 퇴근해야 더해집니다)"></i>' : ""}</td>
+      <td>${s.days}일</td><td>${duration(s.seconds)}</td>
+      <td class="${s.missing_days ? "short" : ""}">${s.missing_days ? `${s.missing_days}일` : "충족"}</td>
+      <td class="${s.missing_seconds ? "short" : ""}">${s.missing_seconds ? duration(s.missing_seconds) : "충족"}</td></tr>`;
+  }).join("") || '<tr><td colspan="6" class="muted">모든 학생이 조건을 채웠습니다</td></tr>';
+  $("shortfall-result").textContent = `미달 ${res.rows.length}명 / 등록된 학생 ${students.length}명`
+    + " · 출석 시간은 퇴근까지 찍힌 기록만 더합니다";
+}
+
+$("btn-shortfall").addEventListener("click", guarded(async () => {
+  $("shortfall-date").value = ymd(serverNow());
+  await loadShortfall();
+  $("shortfall-dialog").showModal();
+}));
+$("shortfall-date").addEventListener("change", () => guarded(loadShortfall)());
 
 $("edit-form").addEventListener("submit", guarded(async (e) => {
   e.preventDefault();
@@ -165,7 +386,18 @@ let roster = [];
 let rosterTimer = null;
 let ws = null;
 
+// 화면 배치(영상 2 : 카드 1, 높이 맞춤)는 admin.css에서 한다. 여기서는 고개 돌리기 안내가 입력 카드 자리에
+// 나와도 높이가 같게(영상 크기가 들썩이지 않게) 입력 카드가 보일 때의 높이만 기억해 둔다 (--reg-side-h)
+function sizeRegisterCamera() {
+  if (!$("register-form").hidden && $("register-form").offsetHeight > 0) {
+    $("tab-register").style.setProperty("--reg-side-h", `${$("register-form").offsetHeight}px`);
+  }
+}
+const registerSizer = new ResizeObserver(sizeRegisterCamera);
+registerSizer.observe($("register-form"));
+
 async function openRegister() {
+  sizeRegisterCamera();
   const keep = () => api("/register/camera", { method: "POST" }).catch((e) => toast(e.message, true));
   await keep();
   clearInterval(registerTimer);
@@ -173,6 +405,7 @@ async function openRegister() {
   $("register-video").src = `/video.mjpg?t=${Date.now()}`;
   connectState();
   await loadRoster(false);
+  sizeRegisterCamera();  // 명단 안내 문구가 들어오면 입력 카드 높이가 바뀐다
 }
 
 function stopRegisterCamera() {
@@ -180,6 +413,8 @@ function stopRegisterCamera() {
   clearInterval(registerTimer);
   clearTimeout(rosterTimer);
   registerTimer = null;
+  $("register-guide").hidden = true;
+  $("register-form").hidden = false;
   $("register-video").removeAttribute("src");
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
   navigator.sendBeacon?.("/api/admin/register/camera/stop");
@@ -201,10 +436,20 @@ function renderRegisterState(st) {
   setVisual($("register-visual"), card.state);
   $("register-title").textContent = card.title || "";
   $("register-detail").textContent = card.detail || "";
-  // 고개 돌리기 안내 — 등록할 학생이 보고 따라 한다
-  $("register-turn").hidden = !card.challenge;
-  if (card.challenge) renderTurnGuide($("register-turn"), card.challenge);
+  // 고개 돌리기 중에는 입력 카드 자리에 안내를 띄우고, 다 돌리면(done) 입력 카드로 돌아간다
+  const turning = st.mode === "register" && !!card.challenge && !card.challenge.done;
+  if ($("register-guide").hidden === turning) {
+    $("register-guide").hidden = !turning;
+    $("register-form").hidden = turning;
+    sizeRegisterCamera();
+  }
+  if (turning) renderTurnGuide($("register-turn"), card.challenge);
 }
+
+$("btn-recenter").addEventListener("click", guarded(async () => {
+  await api("/register/recenter", { method: "POST" });
+  toast("지금 고개 방향을 정면으로 다시 잡았습니다.\n처음 방향부터 다시 돌려 주세요.");
+}));
 
 function setVisual(el, state) {
   el.className = "visual small";
@@ -316,7 +561,8 @@ async function loadLogs() {
     if (logMode === "custom") { $("log-start").value = res.start; $("log-end").value = res.end; }
     $("log-head").innerHTML = "<tr><th>학번</th><th>이름</th><th>구분</th><th>날짜</th><th>시간</th><th>패널티</th></tr>";
     $("log-rows").innerHTML = logRows.map((r, i) => {
-      const type = (r.log_type === "CHECK_IN" ? "출근" : "퇴근") + (r.valid ? "" : " (미인정)");
+      const type = (r.log_type === "CHECK_IN" ? "출근" : "퇴근") + (r.valid ? "" : " (미인정)")
+        + (r.edited_by ? ` · 관리자 처리(${r.edited_by})` : "");
       return `<tr data-index="${i}" class="${r.valid ? "" : "invalid"}">
         <td>${esc(r.user_id)}</td><td>${esc(r.name)}</td><td class="${r.photo_path ? "has-photo" : ""}">${type}</td>
         <td>${dateKo(r.log_date)}</td><td>${esc(r.log_time)}</td><td>${esc(r.penalty)}</td></tr>`;

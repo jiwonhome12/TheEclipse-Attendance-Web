@@ -46,19 +46,27 @@ class TurnChallenge:
     상하 값은 사람·카메라 높이마다 다르므로 처음 정면 값(ref_pitch)과의 차이로 본다.
     """
 
-    def __init__(self, ref_embedding, pose):
+    def __init__(self, ref_embedding, pose, center=None):
+        """center: 관리자가 [초점 맞추기]로 정한 정면 (좌우, 상하). 없으면 좌우 0, 상하는 처음 정면 값."""
         self.steps = random.sample(list(TURN_DIRECTIONS), 2)
         self.index = 0
         self.done_at = None   # 다 돌리고 정면으로 돌아온 시각
         norm = np.linalg.norm(ref_embedding)
         self.ref = ref_embedding / norm if norm else ref_embedding
-        self.ref_pitch = None
+        self.ref_yaw = center[0] if center else 0.0
+        self.ref_pitch = center[1] if center else None
         self._set_ref_pitch(pose)
 
     def _set_ref_pitch(self, pose):
         # 정면(좌우로 안 돌린 상태)일 때의 상하 값을 기준으로 삼는다
-        if self.ref_pitch is None and pose is not None and abs(pose[0]) <= core.HEAD_CENTER_RATIO:
+        if self.ref_pitch is None and pose is not None and abs(pose[0] - self.ref_yaw) <= core.HEAD_CENTER_RATIO:
             self.ref_pitch = pose[1]
+
+    def recenter(self, pose):
+        """지금 고개 방향을 정면(기준점)으로 다시 잡고, 고개 돌리기를 처음 단계부터 다시 한다."""
+        self.ref_yaw, self.ref_pitch = pose
+        self.index = 0
+        self.done_at = None
 
     @property
     def turned(self):
@@ -69,11 +77,11 @@ class TurnChallenge:
         return norm > 0 and float(self.ref @ (embedding / norm)) >= TURN_IDENTITY_SIM
 
     def offsets(self, pose):
-        """(좌우, 상하) — 상하는 정면 기준값과의 차이. 기준값이 아직 없으면 상하는 None."""
+        """(좌우, 상하) — 정면 기준값과의 차이. 상하 기준값이 아직 없으면 상하는 None."""
         if pose is None:
             return None, None
         yaw, pitch = pose
-        return yaw, None if self.ref_pitch is None else pitch - self.ref_pitch
+        return yaw - self.ref_yaw, None if self.ref_pitch is None else pitch - self.ref_pitch
 
     def is_center(self, pose):
         yaw, dpitch = self.offsets(pose)
@@ -139,6 +147,7 @@ class AttendanceEngine:
         self.challenge = None           # 지금 진행 중인 고개 돌리기 (TurnChallenge)
         self._last_face_time = 0.0
         self.last_pose = None           # 마지막 고개 방향 (core.head_pose)
+        self.register_center = None     # [학생 등록]에서 [초점 맞추기]로 정한 정면 (좌우, 상하) — 등록 탭을 닫으면 지운다
 
         self.ai_ready = False
         self.ai_failed = False
@@ -271,6 +280,7 @@ class AttendanceEngine:
             self.mode = "register"
             self.pending_action = None
             self.payload = None
+            self.register_center = None
             self.session_started = time.time()
             self._reset_candidate()
             self._reset_liveness()
@@ -284,6 +294,23 @@ class AttendanceEngine:
         with self._lock:
             if self.mode == "register":
                 self._enter("idle", None)
+
+    def recenter_register(self):
+        """
+        [초점 맞추기] — 지금 카메라 앞 학생의 고개 방향을 정면(방향 판의 가운데)으로 다시 잡는다.
+        카메라가 비스듬히 달려 있거나 학생이 카메라를 바로 못 보는 자리라 점이 가운데로 안 올 때 쓴다.
+        등록 탭이 열려 있는 동안 다음 학생에게도 같은 기준을 쓰고, 고개 돌리기는 처음 단계부터 다시 한다.
+        """
+        with self._lock:
+            if self.mode != "register":
+                raise ValueError("[학생 등록] 탭에서 카메라가 켜져 있을 때 쓸 수 있습니다.")
+            if not self.cached_faces or self.last_pose is None:
+                raise ValueError("카메라에 얼굴이 보이지 않습니다.\n학생이 편하게 카메라를 바라본 상태에서 눌러주세요.")
+            self.register_center = tuple(self.last_pose)
+            if self.challenge is not None:
+                self.challenge.recenter(self.register_center)
+                self._set_card("turn", self.challenge.instruction(), "기준점을 다시 잡았습니다 — 처음 방향부터 돌려 주세요",
+                               challenge=self.challenge.to_dict(self.last_pose))
 
     def reopen_camera(self):
         """관리자 화면에서 카메라 번호를 바꿨다 — 캡처 스레드가 닫고 camera.txt의 번호로 다시 연다."""
@@ -551,11 +578,11 @@ class AttendanceEngine:
             return
         embedding = self._main_face(faces)
         if self.challenge is None:
-            self.challenge = TurnChallenge(embedding, pose)
+            self.challenge = TurnChallenge(embedding, pose, self.register_center)
         ch = self.challenge
         ch.update(pose, embedding)
         if ch.done_at is not None and time.time() - ch.done_at > core.HEAD_TURN_VALID_SECONDS:
-            self.challenge = ch = TurnChallenge(embedding, pose)  # 너무 오래 지났다 — 다시 돌린다
+            self.challenge = ch = TurnChallenge(embedding, pose, self.register_center)  # 너무 오래 지났다 — 다시 돌린다
         if ch.done_at is None:
             self._set_card("turn", ch.instruction(), "화면의 안내를 따라 천천히 돌려 주세요",
                            challenge=ch.to_dict(pose))
