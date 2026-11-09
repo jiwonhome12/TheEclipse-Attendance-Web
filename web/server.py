@@ -40,6 +40,7 @@ async def lifespan(_app):
     from engine import AttendanceEngine
     engine = AttendanceEngine()
     _app.state.engine = engine  # 관리자 API(admin_api.py)가 쓴다
+    core.start_weekly_mail_scheduler()  # 목요일 06:00 이후 주간 미달 학생에게 안내 메일 (core.py 3-1)
     yield
     engine.close()
 

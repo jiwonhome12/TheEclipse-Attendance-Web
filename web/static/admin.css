@@ -185,7 +185,11 @@ table.data tbody tr.selected .tl-label { color: var(--blue-dark); }
 /* ---------- 주간 미달자 ---------- */
 .shortfall-dialog { width: min(92vw, 860px); text-align: left; }
 .shortfall-dialog .table-wrap { max-height: 60vh; }
-.shortfall-dialog form { text-align: right; margin-top: 12px; }
+.shortfall-dialog .dialog-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.shortfall-dialog .dialog-foot small { margin-right: auto; text-align: left; }
+.mail-cell { font-size: 13px; white-space: nowrap; }
+.mail-ok { color: var(--ok); font-weight: 700; }
+.mail-fail { color: var(--err); font-weight: 700; cursor: help; }
 .shortfall-dialog td.short { color: var(--err); font-weight: 700; }
 .inline-label { flex-direction: row; align-items: center; gap: 8px; }
 

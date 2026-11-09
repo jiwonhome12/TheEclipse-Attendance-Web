@@ -22,6 +22,7 @@ import numpy as np
 import time
 import sqlite3
 import json
+import re
 import shutil
 import sys
 import calendar
@@ -791,6 +792,7 @@ GOOGLE_FORM_COLUMNS = {
     "Department": ("전공", "학과", "소속"),
     "Phone": ("전화", "연락처", "휴대폰"),
     "Grade": ("학년",),
+    "Email": ("이메일", "메일", "mail", "Mail", "MAIL"),
 }
 
 
@@ -1127,6 +1129,23 @@ def init_db():
         cursor.execute("ALTER TABLE users ADD COLUMN grade TEXT NOT NULL DEFAULT ''")
     except sqlite3.OperationalError:
         pass
+    # 주간 미달 안내 메일을 받을 주소 (명단의 '이메일' 열에서 채우거나 관리자가 입력한다)
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    # 주간 미달 안내 메일을 보낸 기록 — 같은 주에 같은 학생에게 두 번 보내지 않게 (week_start = 그 주 월요일)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS weekly_mail_log (
+            week_start TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            email TEXT NOT NULL,
+            sent_at TEXT NOT NULL,
+            ok INTEGER NOT NULL,
+            error TEXT,
+            PRIMARY KEY (week_start, user_id)
+        )
+    """)
 
     # 출석 기록 테이블 (구분, 날짜, 시간 필드 보강)
     cursor.execute("""
@@ -1573,8 +1592,176 @@ def weekly_shortfall(base=None):
     return monday, sunday, rows
 
 
-def update_student(student_id, name, major, penalty, phone, grade):
-    """학생 정보를 고친다. 입력이 잘못됐으면 안내 문구를 담은 ValueError."""
+# ==========================================
+# 3-1. 주간 미달 안내 메일 — 목요일 06:00 이후 자동으로 한 번 보낸다
+# ==========================================
+# 메일은 구글 Apps Script 웹 앱(tools/weekly_mail_apps_script.gs)이 조교 구글 계정으로 보낸다.
+# 이 프로그램은 그 웹 앱 주소로 {secret, to, subject, body}를 보낼 뿐이라 메일 비밀번호를 저장하지 않는다.
+WEEKLY_MAIL_WEEKDAY = 3            # 목요일 (월=0)
+WEEKLY_MAIL_TIME = "06:00:00"      # 이 시각 이후 처음 확인할 때 보낸다 (06:00 자동 실행과 같은 시각)
+WEEKLY_MAIL_CHECK_SECONDS = 600    # 켜져 있는 동안 이 간격으로 보낼 때가 됐는지 확인한다
+WEEKDAY_KO = "월화수목금토일"
+
+
+def mail_settings():
+    """(Apps Script 웹 앱 주소, 비밀값). 비밀값이 없으면 새로 만들어 저장한다 (스크립트에 같은 값을 넣는다)."""
+    data = load_settings()
+    secret = str(data.get("mail_secret") or "")
+    if not secret:
+        import secrets
+        secret = secrets.token_urlsafe(24)
+        save_setting("mail_secret", secret)
+    return str(data.get("mail_webapp_url") or "").strip(), secret
+
+
+def send_mail(to, subject, body, timeout=20):
+    """Apps Script 웹 앱으로 메일 한 통을 보낸다. 실패하면 이유를 담은 RuntimeError."""
+    import requests
+    url, secret = mail_settings()
+    if not url:
+        raise RuntimeError("메일을 보낼 Apps Script 웹 앱 주소가 설정되어 있지 않습니다. ([설정] → 주간 미달 안내 메일)")
+    try:
+        # Apps Script는 결과를 다른 주소로 넘겨서(302) 돌려준다 — requests가 따라가서 받는다
+        resp = requests.post(url, json={"secret": secret, "to": to, "subject": subject, "body": body}, timeout=timeout)
+    except requests.RequestException as e:
+        raise RuntimeError(f"Apps Script에 연결하지 못했습니다: {e}") from None
+    try:
+        result = resp.json()
+    except ValueError:
+        raise RuntimeError("Apps Script 응답을 읽지 못했습니다. 웹 앱 주소와 배포 설정(액세스 권한: 모든 사용자)을 확인하세요.\n"
+                           f"(HTTP {resp.status_code})") from None
+    if not result.get("ok"):
+        error = result.get("error") or "알 수 없는 오류"
+        if error == "unauthorized":
+            error = "비밀값이 다릅니다. [설정]의 비밀값을 Apps Script의 SECRET에 그대로 넣고 다시 배포하세요."
+        raise RuntimeError(f"Apps Script가 메일을 보내지 못했습니다: {error}")
+    return result
+
+
+def weekly_mail_content(row, monday, sunday, today, as_of=None):
+    """미달 학생 한 명에게 보낼 (제목, 본문). as_of: 몇 시 기준인지 (기본: 지금)."""
+    as_of = as_of or datetime.now().strftime("%H:%M")
+    period = f"{monday.month}/{monday.day}({WEEKDAY_KO[monday.weekday()]}) ~ {sunday.month}/{sunday.day}({WEEKDAY_KO[sunday.weekday()]})"
+    left_days = max(0, (sunday - today).days + 1)  # 오늘 포함 일요일까지
+    left_names = "·".join(WEEKDAY_KO[(today.weekday() + i) % 7] for i in range(left_days))
+    required_hours = WEEKLY_REQUIRED_SECONDS // 3600
+    day_line = (f"{row['days']}일 / {WEEKLY_REQUIRED_DAYS}일 → {row['missing_days']}일 더 필요"
+                if row["missing_days"] else f"{row['days']}일 / {WEEKLY_REQUIRED_DAYS}일 (충족)")
+    time_line = (f"{format_duration(row['seconds'])} / {required_hours}시간 → {format_duration(row['missing_seconds'])} 더 필요"
+                 if row["missing_seconds"] else f"{format_duration(row['seconds'])} / {required_hours}시간 (충족)")
+    subject = f"[창의공간] 이번 주 출석 현황 안내 ({period})"
+    body = (
+        f"{row['name']} 학생, 안녕하세요.\n"
+        f"창의공간 이번 주({period}) 출석 현황을 알려드립니다. ({today.month}/{today.day} {as_of} 기준)\n\n"
+        f"■ 출근 일수: {day_line}\n"
+        f"■ 출석 시간: {time_line}\n\n"
+        f"이번 주 기준(주 {WEEKLY_REQUIRED_DAYS}회 · {required_hours}시간)까지 남은 기간: {left_names} ({left_days}일)\n\n"
+        "※ 출근과 퇴근을 모두 찍어야 시간이 인정되고, 00:00~06:00 사이 기록은 인정되지 않습니다.\n"
+        "※ 이 메일은 출석체크 프로그램이 자동으로 보냈습니다. 문의는 창의공간 조교에게 해 주세요.\n"
+    )
+    return subject, body
+
+
+def weekly_mail_status(monday):
+    """이번 주 보낸 기록 {학번: {"email", "sent_at", "ok", "error"}}."""
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("SELECT user_id, email, sent_at, ok, error FROM weekly_mail_log WHERE week_start = ?",
+                        (monday.isoformat(),)).fetchall()
+    conn.close()
+    return {str(u): {"email": e, "sent_at": s, "ok": bool(ok), "error": err} for u, e, s, ok, err in rows}
+
+
+def send_weekly_shortfall_mails(today=None, resend=False):
+    """
+    이번 주 미달 학생에게 안내 메일을 보낸다. 이미 보낸 학생(성공)은 건너뛴다 (resend=True면 다시 보낸다).
+    반환: {"sent": [이름], "failed": [(이름, 이유)], "no_email": [이름], "already": [이름], "week_start"}
+    """
+    today = today or date.today()
+    monday, sunday, rows = weekly_shortfall(today)
+    emails = student_emails()
+    done = weekly_mail_status(monday)
+    result = {"sent": [], "failed": [], "no_email": [], "already": [], "week_start": monday.isoformat()}
+    for row in rows:
+        email = emails.get(row["user_id"], "")
+        if not email:
+            result["no_email"].append(row["name"])
+            continue
+        prev = done.get(row["user_id"])
+        # 이미 받은 학생은 건너뛴다. 실패했어도 주소가 틀린 경우 등은 계속 다시 보내지 않고,
+        # 인터넷·Apps Script 연결 문제로 실패한 학생만 다음 확인 때 다시 보낸다
+        if not resend and prev and (prev["ok"] or "연결하지 못했습니다" not in (prev["error"] or "")):
+            result["already"].append(row["name"])
+            continue
+        subject, body = weekly_mail_content(row, monday, sunday, today)
+        try:
+            send_mail(email, subject, body)
+            ok, error = True, None
+            result["sent"].append(row["name"])
+        except RuntimeError as e:
+            ok, error = False, str(e)
+            result["failed"].append((row["name"], error))
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("INSERT OR REPLACE INTO weekly_mail_log (week_start, user_id, email, sent_at, ok, error) "
+                     "VALUES (?, ?, ?, ?, ?, ?)",
+                     (monday.isoformat(), row["user_id"], email, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                      int(ok), error))
+        conn.commit()
+        conn.close()
+        if not ok and "연결하지 못했습니다" in error:
+            break  # 인터넷·주소 문제면 나머지도 실패하므로 다음 확인 때 다시 시도한다
+    save_setting("weekly_mail_last", {"at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                      **{k: len(v) if isinstance(v, list) else v for k, v in result.items()}})
+    return result
+
+
+def weekly_mail_due(now=None):
+    """지금이 자동 발송할 때인지 — 목요일 06:00 이후. (같은 주 중복은 send_weekly_shortfall_mails가 막는다)"""
+    now = now or datetime.now()
+    return now.weekday() == WEEKLY_MAIL_WEEKDAY and now.strftime("%H:%M:%S") >= WEEKLY_MAIL_TIME
+
+
+def start_weekly_mail_scheduler():
+    """
+    목요일 06:00에 자동으로 켜지면(작업 스케줄러) 바로, 그 뒤로는 켜져 있는 동안 10분마다 확인해서
+    이번 주 미달 학생에게 안내 메일을 보낸다. 웹 앱 주소가 없으면 아무것도 하지 않는다.
+    이미 받은 학생에게는 다시 보내지 않고, 실패한 학생(인터넷 끊김 등)에게는 다음 확인 때 다시 보낸다.
+    """
+    def loop():
+        while True:
+            try:
+                if weekly_mail_due() and mail_settings()[0]:
+                    result = send_weekly_shortfall_mails()
+                    if result["sent"] or result["failed"]:
+                        print(f"[출석] 주간 미달 안내 메일 — 보냄 {len(result['sent'])}명, "
+                              f"실패 {len(result['failed'])}명, 이메일 없음 {len(result['no_email'])}명")
+            except Exception as e:  # 메일 때문에 출석 프로그램이 멈추면 안 된다
+                print(f"[출석] 주간 미달 안내 메일 확인 실패: {e}")
+            time.sleep(WEEKLY_MAIL_CHECK_SECONDS)
+
+    import threading
+    threading.Thread(target=loop, name="weekly-mail", daemon=True).start()
+
+
+def student_emails():
+    """등록된 학생의 이메일 {학번: 주소} (list_students는 tkinter 화면이 열 순서대로 쓰므로 따로 둔다)."""
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("SELECT user_id, email FROM users WHERE role = 'student'").fetchall()
+    conn.close()
+    return {str(user_id): email or "" for user_id, email in rows}
+
+
+def normalize_email(value):
+    """이메일 주소 앞뒤 공백을 지우고 형식을 확인한다. 비어 있으면 "". 형식이 틀리면 ValueError."""
+    email = str(value or "").strip()
+    if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise ValueError("이메일 주소 형식이 올바르지 않습니다. (예: hong@gmail.com)")
+    return email
+
+
+def update_student(student_id, name, major, penalty, phone, grade, email=None):
+    """학생 정보를 고친다. email=None이면 이메일은 그대로 둔다. 입력이 잘못됐으면 안내 문구를 담은 ValueError."""
+    if email is not None:
+        email = normalize_email(email)
     name, major, phone, grade = (str(v or "").strip() for v in (name, major, phone, grade))
     penalty = str(penalty if penalty is not None else "").strip()
     # 전화번호·학년은 아직 모르는 학생도 있어서 비워둘 수 있다
@@ -1589,6 +1776,8 @@ def update_student(student_id, name, major, penalty, phone, grade):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("UPDATE users SET name = ?, major = ?, penalty = ?, phone = ?, grade = ? WHERE user_id = ?",
                  (name, major, penalty, phone, grade, student_id))
+    if email is not None:
+        conn.execute("UPDATE users SET email = ? WHERE user_id = ?", (email, student_id))
     conn.commit()
     conn.close()
 
@@ -1628,17 +1817,18 @@ def find_duplicate_face(embedding, enrolled_users, embed_matrix):
     return enrolled_users[best_idx] if float(sims[best_idx]) >= THRESHOLD else None
 
 
-def insert_student(student_id, name, major, phone, grade, embedding):
+def insert_student(student_id, name, major, phone, grade, embedding, email=""):
     """얼굴 임베딩과 함께 학생을 등록한다. 이미 있는 학번이면 ValueError."""
+    email = normalize_email(email)
     conn = sqlite3.connect(DB_PATH)
     try:
         if conn.execute("SELECT id FROM users WHERE user_id = ?", (student_id,)).fetchone():
             raise ValueError("이미 가입된 학번 ID입니다.")
         conn.execute("""
-            INSERT INTO users (user_id, name, major, role, embedding, penalty, phone, grade)
-            VALUES (?, ?, ?, 'student', ?, 0, ?, ?)
+            INSERT INTO users (user_id, name, major, role, embedding, penalty, phone, grade, email)
+            VALUES (?, ?, ?, 'student', ?, 0, ?, ?, ?)
         """, (student_id, name, major or DEPARTMENT_NAME, np.asarray(embedding, dtype=np.float32).tobytes(),
-              phone, normalize_grade(grade)))
+              phone, normalize_grade(grade), email))
         conn.commit()
     finally:
         conn.close()
@@ -1646,22 +1836,28 @@ def insert_student(student_id, name, major, phone, grade, embedding):
 
 def fill_blank_contacts_from_roster(roster):
     """
-    이미 등록된 학생 중 전화번호·학년이 비어 있으면 명단(구글폼 응답) 값으로 채운다.
+    이미 등록된 학생 중 전화번호·학년·이메일이 비어 있으면 명단(구글폼 응답) 값으로 채운다.
     관리자가 직접 입력한 값은 덮어쓰지 않는다. 바뀐 학생 수를 돌려준다.
     """
     by_id = {str(s.get("StudentId", "")).strip(): s for s in roster}
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id, phone, grade FROM users WHERE role = 'student' AND (phone = '' OR grade = '')")
+    cursor.execute("SELECT user_id, phone, grade, email FROM users "
+                   "WHERE role = 'student' AND (phone = '' OR grade = '' OR email = '')")
     changed = 0
-    for user_id, phone, grade in cursor.fetchall():
+    for user_id, phone, grade, email in cursor.fetchall():
         student = by_id.get(str(user_id))
         if not student:
             continue
         new_phone = phone or str(student.get("Phone") or "").strip()
         new_grade = grade or normalize_grade(student.get("Grade"))
-        if (new_phone, new_grade) != (phone, grade):
-            cursor.execute("UPDATE users SET phone = ?, grade = ? WHERE user_id = ?", (new_phone, new_grade, user_id))
+        try:
+            new_email = email or normalize_email(student.get("Email"))
+        except ValueError:
+            new_email = email  # 명단에 잘못 적힌 주소는 넣지 않는다
+        if (new_phone, new_grade, new_email) != (phone, grade, email):
+            cursor.execute("UPDATE users SET phone = ?, grade = ?, email = ? WHERE user_id = ?",
+                           (new_phone, new_grade, new_email, user_id))
             changed += 1
     conn.commit()
     conn.close()

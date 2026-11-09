@@ -88,6 +88,7 @@
           <label>전화번호<input name="phone"></label>
           <label>학년<input name="grade" inputmode="numeric"></label>
           <label>패널티<input name="penalty" inputmode="numeric"></label>
+          <label class="span2">이메일 <small class="muted">— 주간 미달 안내 메일을 받는 주소</small><input name="email" type="email" autocomplete="off"></label>
         </div>
         <button class="primary wide" type="submit">수정 완료</button>
 
@@ -147,6 +148,7 @@
           <label>전공<input name="major"></label>
           <label>전화번호<input name="phone"></label>
           <label>학년<input name="grade" inputmode="numeric"></label>
+          <label>이메일<input name="email" type="email" autocomplete="off"></label>
         </div>
         <button class="primary wide big" type="submit">얼굴 등록</button>
       </form>
@@ -215,6 +217,27 @@
         <input id="form-url" class="wide-input" placeholder="https://docs.google.com/spreadsheets/d/...">
         <small class="muted">시트 주소를 넣으면 Sheets API로 실시간으로 읽고, 비워 두면 창공시스템 명단(roster.json)을 씁니다.</small>
       </div>
+      <div class="card">
+        <h3>주간 미달 안내 메일</h3>
+        <small class="muted" id="mail-desc"></small>
+        <div class="setting-row">
+          <div><strong>비밀값</strong><small>Apps Script의 SECRET에 그대로 넣습니다</small></div>
+          <button class="ghost" id="btn-copy-secret">복사</button>
+        </div>
+        <input id="mail-secret" class="wide-input" readonly>
+        <div class="setting-row">
+          <div><strong>Apps Script 웹 앱 주소</strong><small>배포하고 받은 https://script.google.com/macros/s/.../exec</small></div>
+          <button class="ghost" id="btn-mail-url">저장</button>
+        </div>
+        <input id="mail-url" class="wide-input" placeholder="https://script.google.com/macros/s/.../exec">
+        <div class="setting-row">
+          <div><strong>시험 메일</strong><small>학생에게는 보내지 않고 이 주소로만 보냅니다</small></div>
+          <button class="ghost" id="btn-mail-test">보내기</button>
+        </div>
+        <input id="mail-test-to" class="wide-input" type="email" placeholder="조교 이메일 주소">
+        <small class="muted" id="mail-last"></small>
+        <small class="muted">스크립트 코드와 설치 방법: 프로그램 폴더의 tools\weekly_mail_apps_script.gs</small>
+      </div>
     </section>
   </main>
 
@@ -236,12 +259,16 @@
     </div>
     <div class="table-wrap">
       <table class="data">
-        <thead><tr><th>학번</th><th>이름</th><th>출근 일수</th><th>출석 시간</th><th>부족한 일수</th><th>부족한 시간</th></tr></thead>
+        <thead><tr><th>학번</th><th>이름</th><th>출근 일수</th><th>출석 시간</th><th>부족한 일수</th><th>부족한 시간</th><th>안내 메일</th></tr></thead>
         <tbody id="shortfall-rows"></tbody>
       </table>
     </div>
     <p id="shortfall-result" class="log-result"></p>
-    <form method="dialog"><button class="primary">닫기</button></form>
+    <form method="dialog" class="dialog-foot">
+      <small id="shortfall-mail-note" class="muted"></small>
+      <button type="button" class="ghost" id="btn-shortfall-mail">미달자에게 지금 메일 보내기</button>
+      <button class="primary">닫기</button>
+    </form>
   </dialog>
 
   <div id="toast" class="toast" hidden></div>

@@ -3759,6 +3759,8 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = AttendanceApp(root, kiosk=scheduled or "--kiosk" in sys.argv)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
+    # 매일 06:00 자동 실행 — 목요일이면 주간 미달 학생에게 안내 메일을 보낸다 (설정은 웹 관리자 화면에서)
+    core.start_weekly_mail_scheduler()
     if "--selftest" in sys.argv:
         run_selftest(app)
     root.mainloop()

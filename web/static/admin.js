@@ -155,7 +155,7 @@ document.addEventListener("visibilitychange", () => {
 function matchesSearch(s, q) {
   if (!q) return true;
   const digits = q.replace(/\D/g, "");
-  return [s.user_id, s.name, s.major, s.grade].some((v) => String(v ?? "").toLowerCase().includes(q))
+  return [s.user_id, s.name, s.major, s.grade, s.email].some((v) => String(v ?? "").toLowerCase().includes(q))
     || (digits.length >= 2 && String(s.phone ?? "").replace(/\D/g, "").includes(digits))
     || String(s.phone ?? "").includes(q);
 }
@@ -252,7 +252,7 @@ $("student-rows").addEventListener("click", (e) => {
   for (const r of $("student-rows").children) r.classList.toggle("selected", r === row);
   selectedStudent = students.find((s) => s.user_id === row.dataset.id);
   const form = $("edit-form");
-  for (const key of ["user_id", "name", "major", "phone", "grade", "penalty"]) form.elements[key].value = selectedStudent[key] ?? "";
+  for (const key of ["user_id", "name", "major", "phone", "grade", "penalty", "email"]) form.elements[key].value = selectedStudent[key] ?? "";
   renderCheckout(true);
 });
 
@@ -332,11 +332,39 @@ async function loadShortfall() {
       <td>${esc(s.user_id)}</td><td>${esc(s.name)}${working ? ' <i class="led on" title="지금 출근 중 (진행 중인 시간은 퇴근해야 더해집니다)"></i>' : ""}</td>
       <td>${s.days}일</td><td>${duration(s.seconds)}</td>
       <td class="${s.missing_days ? "short" : ""}">${s.missing_days ? `${s.missing_days}일` : "충족"}</td>
-      <td class="${s.missing_seconds ? "short" : ""}">${s.missing_seconds ? duration(s.missing_seconds) : "충족"}</td></tr>`;
-  }).join("") || '<tr><td colspan="6" class="muted">모든 학생이 조건을 채웠습니다</td></tr>';
+      <td class="${s.missing_seconds ? "short" : ""}">${s.missing_seconds ? duration(s.missing_seconds) : "충족"}</td>
+      <td class="mail-cell">${mailStatusHtml(s)}</td></tr>`;
+  }).join("") || '<tr><td colspan="7" class="muted">모든 학생이 조건을 채웠습니다</td></tr>';
+  const noEmail = res.rows.filter((s) => !s.email).length;
   $("shortfall-result").textContent = `미달 ${res.rows.length}명 / 등록된 학생 ${students.length}명`
-    + " · 출석 시간은 퇴근까지 찍힌 기록만 더합니다";
+    + (noEmail ? ` · 이메일 없음 ${noEmail}명` : "") + " · 출석 시간은 퇴근까지 찍힌 기록만 더합니다";
+  // 메일은 이번 주 미달자에게만 보낸다 (지난주를 보고 있으면 버튼을 숨긴다)
+  $("btn-shortfall-mail").hidden = !res.this_week || !res.rows.length;
+  $("btn-shortfall-mail").disabled = !res.mail_ready;
+  $("shortfall-mail-note").textContent = !res.mail_ready ? "메일을 보내려면 [설정] → 주간 미달 안내 메일을 먼저 설정하세요"
+    : res.this_week ? `매주 목요일 06:00 이후 미달자에게 자동으로 보냅니다 (받은 학생에게는 다시 보내지 않음)` : "";
 }
+
+function mailStatusHtml(s) {
+  if (!s.email) return '<span class="muted">이메일 없음</span>';
+  const title = esc(s.email);
+  if (!s.mail) return `<span class="muted" title="${title}">보내기 전</span>`;
+  if (s.mail.ok) return `<span class="mail-ok" title="${title}">✓ ${esc(s.mail.sent_at.slice(5, 16))}</span>`;
+  return `<span class="mail-fail" title="${esc(s.mail.error || "")}">✕ 실패</span>`;
+}
+
+$("btn-shortfall-mail").addEventListener("click", guarded(async () => {
+  if (!confirm("이번 주 미달 학생에게 지금 안내 메일을 보낼까요?\n이미 받은 학생과 이메일이 없는 학생은 건너뜁니다.")) return;
+  $("btn-shortfall-mail").disabled = true;
+  try {
+    const res = await api("/mail/weekly-shortfall", { method: "POST" });
+    let msg = `보냄 ${res.sent.length}명 · 이미 받음 ${res.already.length}명 · 이메일 없음 ${res.no_email.length}명`;
+    if (res.failed.length) msg += `\n실패 ${res.failed.length}명: ${res.failed[0][1]}`;
+    toast(msg, res.failed.length > 0);
+  } finally {
+    await loadShortfall();
+  }
+}));
 
 $("btn-shortfall").addEventListener("click", guarded(async () => {
   $("shortfall-date").value = ymd(serverNow());
@@ -351,7 +379,7 @@ $("edit-form").addEventListener("submit", guarded(async (e) => {
   const f = e.target.elements;
   await api(`/students/${encodeURIComponent(selectedStudent.user_id)}`, {
     method: "PUT",
-    body: { name: f.name.value, major: f.major.value, penalty: f.penalty.value, phone: f.phone.value, grade: f.grade.value },
+    body: { name: f.name.value, major: f.major.value, penalty: f.penalty.value, phone: f.phone.value, grade: f.grade.value, email: f.email.value },
   });
   toast("학생 정보 변경이 완료되었습니다.");
   await loadStudents();
@@ -492,7 +520,7 @@ $("roster-select").addEventListener("change", (e) => {
   e.target.dataset.picked = s ? s.user_id : "";
   if (!s) return;
   const f = $("register-form").elements;
-  for (const key of ["user_id", "name", "major", "phone", "grade"]) f[key].value = s[key] || "";
+  for (const key of ["user_id", "name", "major", "phone", "grade", "email"]) f[key].value = s[key] || "";
 });
 
 $("register-form").addEventListener("submit", guarded(async (e) => {
@@ -500,7 +528,7 @@ $("register-form").addEventListener("submit", guarded(async (e) => {
   const f = e.target.elements;
   const res = await api("/register", {
     method: "POST",
-    body: { user_id: f.user_id.value, name: f.name.value, major: f.major.value, phone: f.phone.value, grade: f.grade.value },
+    body: { user_id: f.user_id.value, name: f.name.value, major: f.major.value, phone: f.phone.value, grade: f.grade.value, email: f.email.value },
   });
   toast(`[${res.name}] 학생이 성공적으로 등록되었습니다.`);
   e.target.reset();
@@ -629,7 +657,38 @@ async function loadSettings() {
   $("key-email").textContent = settings.key_email || "Google Cloud에서 받은 JSON 키 파일을 고르세요";
   $("key-email").style.color = settings.key_email ? "" : "var(--err)";
   $("form-url").value = settings.google_form_url;
+  await loadMailSettings();
 }
+
+async function loadMailSettings() {
+  const mail = await api("/mail");
+  $("mail-desc").textContent = `매주 ${mail.weekday}요일 ${mail.time} 이후 처음 켜져 있을 때, 그 주 미달 학생에게 출근 일수·남은 시간을 메일로 보냅니다. `
+    + "메일은 조교 구글 계정의 Apps Script가 보냅니다.";
+  $("mail-secret").value = mail.secret;
+  $("mail-url").value = mail.url;
+  const last = mail.last;
+  $("mail-last").textContent = !mail.url ? "● 아직 설정하지 않았습니다 — 웹 앱 주소를 저장하면 자동 발송이 켜집니다"
+    : last ? `● 자동 발송 켜짐 · 마지막 발송 ${last.at} — 보냄 ${last.sent}명, 실패 ${last.failed}명, 이메일 없음 ${last.no_email}명`
+    : "● 자동 발송 켜짐 · 아직 보낸 적 없음";
+  $("mail-last").style.color = mail.url ? "var(--ok)" : "var(--warn)";
+}
+
+$("btn-copy-secret").addEventListener("click", guarded(async () => {
+  $("mail-secret").select();
+  try { await navigator.clipboard.writeText($("mail-secret").value); } catch { document.execCommand("copy"); }
+  toast("비밀값을 복사했습니다. Apps Script의 SECRET = '...' 안에 붙여넣으세요.");
+}));
+
+$("btn-mail-url").addEventListener("click", guarded(async () => {
+  await api("/mail", { method: "PUT", body: { url: $("mail-url").value } });
+  toast($("mail-url").value.trim() ? "저장했습니다. [시험 메일]로 잘 가는지 확인하세요." : "웹 앱 주소를 지웠습니다. 자동 발송이 꺼집니다.");
+  await loadMailSettings();
+}));
+
+$("btn-mail-test").addEventListener("click", guarded(async () => {
+  const res = await api("/mail/test", { method: "POST", body: { to: $("mail-test-to").value } });
+  toast(`시험 메일을 보냈습니다. 받은편지함을 확인하세요.${res.remaining != null ? `\n(오늘 더 보낼 수 있는 메일: ${res.remaining}통)` : ""}`);
+}));
 
 $("timeouts").addEventListener("click", guarded(async (e) => {
   const btn = e.target.closest("button[data-timeout]");

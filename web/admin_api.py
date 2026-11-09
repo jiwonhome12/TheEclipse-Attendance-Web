@@ -94,7 +94,8 @@ STUDENT_KEYS = ("user_id", "name", "major", "penalty", "phone", "grade")
 
 @router.get("/students")
 def students(_admin=Depends(require_admin)):
-    return [dict(zip(STUDENT_KEYS, row)) for row in core.list_students()]
+    emails = core.student_emails()
+    return [dict(zip(STUDENT_KEYS, row), email=emails.get(str(row[0]), "")) for row in core.list_students()]
 
 
 @router.get("/presence")
@@ -126,8 +127,63 @@ def manual_checkout(student_id: str, req: CheckoutRequest, admin_id: str = Depen
 @router.get("/weekly-shortfall")
 def weekly_shortfall(base: date | None = None, _admin=Depends(require_admin)):
     monday, sunday, rows = core.weekly_shortfall(base)
+    emails = core.student_emails()
+    mailed = core.weekly_mail_status(monday)
+    for row in rows:
+        row["email"] = emails.get(row["user_id"], "")
+        row["mail"] = mailed.get(row["user_id"])  # 이번 주 안내 메일 보낸 기록 (없으면 None)
     return {"start": monday, "end": sunday, "rows": rows,
-            "required_days": core.WEEKLY_REQUIRED_DAYS, "required_seconds": core.WEEKLY_REQUIRED_SECONDS}
+            "required_days": core.WEEKLY_REQUIRED_DAYS, "required_seconds": core.WEEKLY_REQUIRED_SECONDS,
+            "this_week": monday <= date.today() <= sunday, "mail_ready": bool(core.mail_settings()[0])}
+
+
+# ---------- 주간 미달 안내 메일 ----------
+@router.get("/mail")
+def mail_info(_admin=Depends(require_admin)):
+    url, secret = core.mail_settings()
+    return {"url": url, "secret": secret, "last": core.load_settings().get("weekly_mail_last"),
+            "weekday": core.WEEKDAY_KO[core.WEEKLY_MAIL_WEEKDAY], "time": core.WEEKLY_MAIL_TIME[:5]}
+
+
+class MailUrlRequest(BaseModel):
+    url: str
+
+
+@router.put("/mail")
+def set_mail_url(req: MailUrlRequest, _admin=Depends(require_admin)):
+    url = req.url.strip()
+    if url and not url.startswith("https://script.google.com/"):
+        raise HTTPException(400, "Apps Script 웹 앱 주소(https://script.google.com/macros/s/.../exec)를 넣어주세요.")
+    core.save_setting("mail_webapp_url", url)
+    return {}
+
+
+class MailTestRequest(BaseModel):
+    to: str
+
+
+@router.post("/mail/test")
+def send_test_mail(req: MailTestRequest, _admin=Depends(require_admin)):
+    """설정이 맞는지 아무 주소(보통 조교 본인)로 시험 메일을 보낸다. 학생에게는 보내지 않는다."""
+    try:
+        to = core.normalize_email(req.to)
+        if not to:
+            raise ValueError("시험 메일을 받을 주소를 넣어주세요.")
+        result = core.send_mail(to, "[창의공간] 출석체크 메일 설정 확인",
+                                "출석체크 프로그램의 주간 미달 안내 메일 설정이 잘 되었습니다.\n"
+                                f"매주 {core.WEEKDAY_KO[core.WEEKLY_MAIL_WEEKDAY]}요일 "
+                                f"{core.WEEKLY_MAIL_TIME[:5]} 이후 미달 학생에게 자동으로 보냅니다.")
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(400, str(e))
+    return {"remaining": result.get("remaining")}
+
+
+@router.post("/mail/weekly-shortfall")
+def send_weekly_mails_now(_admin=Depends(require_admin)):
+    """이번 주 미달 학생에게 지금 바로 보낸다 (이미 받은 학생은 건너뛴다)."""
+    if not core.mail_settings()[0]:
+        raise HTTPException(400, "먼저 [설정] → 주간 미달 안내 메일에서 Apps Script 웹 앱 주소를 저장하세요.")
+    return core.send_weekly_shortfall_mails()
 
 
 class StudentUpdate(BaseModel):
@@ -136,12 +192,13 @@ class StudentUpdate(BaseModel):
     penalty: str
     phone: str = ""
     grade: str = ""
+    email: str = ""
 
 
 @router.put("/students/{student_id}")
 def update_student(student_id: str, req: StudentUpdate, request: Request, _admin=Depends(require_admin)):
     try:
-        core.update_student(student_id, req.name, req.major, req.penalty, req.phone, req.grade)
+        core.update_student(student_id, req.name, req.major, req.penalty, req.phone, req.grade, req.email)
     except ValueError as e:
         raise HTTPException(400, str(e))
     engine_of(request).reload_users()
@@ -209,12 +266,13 @@ class RegisterRequest(BaseModel):
     major: str = ""
     phone: str = ""
     grade: str = ""
+    email: str = ""
 
 
 @router.post("/register")
 def register(req: RegisterRequest, request: Request, _admin=Depends(require_admin)):
     try:
-        engine_of(request).register_student(req.user_id, req.name, req.major, req.phone, req.grade)
+        engine_of(request).register_student(req.user_id, req.name, req.major, req.phone, req.grade, req.email)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"name": req.name.strip()}
@@ -232,7 +290,7 @@ def roster(request: Request, _admin=Depends(require_admin)):
     unregistered = [
         {"user_id": str(s.get("StudentId", "")).strip(), "name": str(s.get("Name") or "").strip(),
          "major": str(s.get("Department") or "").strip(), "phone": str(s.get("Phone") or "").strip(),
-         "grade": core.normalize_grade(s.get("Grade"))}
+         "grade": core.normalize_grade(s.get("Grade")), "email": str(s.get("Email") or "").strip()}
         for s in core.unregistered_roster(students)
     ]
     return {

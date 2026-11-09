@@ -317,11 +317,12 @@ class AttendanceEngine:
         core.ACTIVE_CAMERA_INDEX = None  # 새로 연결될 때까지 이전 번호를 보여주지 않는다
         self.camera_reopen = True
 
-    def register_student(self, student_id, name, major, phone, grade):
+    def register_student(self, student_id, name, major, phone, grade, email=""):
         """
         지금 카메라 앞의 얼굴로 학생을 등록한다. 등록하지 못하면 안내 문구를 담은 ValueError.
         사진으로 학생이 등록되면 이후 출석도 사진으로 뚫리므로 등록할 때도 사람인지 확인한다.
         """
+        email = core.normalize_email(email)  # 형식이 틀리면 얼굴 확인 전에 알려준다
         student_id, name = str(student_id or "").strip(), str(name or "").strip()
         if not (student_id and name):
             raise ValueError("학번과 이름을 입력하세요.")
@@ -345,7 +346,7 @@ class AttendanceEngine:
                              f"기존 등록자: {dup['name']} ({dup['user_id']})\n"
                              "동일 인물로 판단되어 등록을 진행하지 않습니다.")
         core.insert_student(student_id, name, str(major or "").strip() or core.DEPARTMENT_NAME,
-                            str(phone or "").strip(), grade, embedding)
+                            str(phone or "").strip(), grade, embedding, email)
         self.reload_users()
         with self._lock:
             self._reset_candidate()  # 다음 학생은 고개 돌리기부터 다시
