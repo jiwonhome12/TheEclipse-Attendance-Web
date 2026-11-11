@@ -5,6 +5,7 @@ tkinter 앱의 눈 깜빡임 대신 '상하좌우 중 무작위 2방향 고개 �
 브라우저는 state()로 지금 상태를 받아 그리기만 하고, 버튼을 누르면 start_session()/go_idle()을 부른다.
 """
 import multiprocessing
+import os
 import random
 import threading
 import time
@@ -168,9 +169,13 @@ class AttendanceEngine:
         self.last_liveness_status = None
 
         # InsightFace는 별도 프로세스에서 로드/실행한다 (core.face_inference_process 참고)
+        # 웹은 tkinter처럼 화면을 직접 그리지 않아 CPU 여유가 있으므로 분석 스레드를 조금 더 주고,
+        # 눈 깜빡임 대신 고개 돌리기로 확인하므로 깜빡임 검사는 끈다 (프레임마다 15~20ms 절약)
+        threads = core.INFERENCE_THREADS if core.LOW_POWER else max(core.INFERENCE_THREADS, (os.cpu_count() or 4) // 2)
         self.face_conn, child_conn = multiprocessing.Pipe()
         self.face_proc = multiprocessing.Process(
-            target=core.face_inference_process, args=(child_conn, core.INFERENCE_THREADS), daemon=True
+            target=core.face_inference_process, args=(child_conn, threads),
+            kwargs={"use_blink": False}, daemon=True
         )
         self.face_proc.start()
 

@@ -496,8 +496,38 @@ def create_face_app():
     return app
 
 
-def face_inference_process(conn, threads):
+# 얼굴 임베딩(인식 모델, 1장에 60~120ms)이 분석 시간의 대부분이다. 고개 방향은 얼굴 찾기(약 25ms)의
+# 5점만으로 구하므로, 같은 자리에 계속 있는 얼굴은 임베딩을 잠깐 재사용하고 얼굴 찾기만 매 프레임 한다.
+# → 고개 방향이 초당 7~8번에서 25번 이상으로 갱신돼 화면의 점이 고개를 바로 따라온다.
+EMBED_REFRESH_SECONDS = 0.3  # 같은 얼굴이라도 이 시간이 지나면 임베딩·위조판별을 다시 계산한다
+EMBED_TRACK_IOU = 0.5        # 앞 프레임 얼굴 상자와 이만큼 겹쳐야 같은 얼굴로 본다 (사람이 바뀌면 자리도 바뀐다)
+
+
+def _box_iou(a, b):
+    x1, y1 = max(a[0], b[0]), max(a[1], b[1])
+    x2, y2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return float(inter / union) if union > 0 else 0.0
+
+
+def _reusable_embedding(tracked, bbox, now):
+    """앞 프레임에서 같은 자리에 있던 얼굴의 (임베딩, 계산한 시각). 너무 오래됐거나 없으면 None."""
+    best, best_iou = None, EMBED_TRACK_IOU
+    for prev_bbox, embedding, computed_at in tracked:
+        iou = _box_iou(prev_bbox, bbox)
+        if iou >= best_iou and now - computed_at < EMBED_REFRESH_SECONDS:
+            best, best_iou = (embedding, computed_at), iou
+    return best
+
+
+def face_inference_process(conn, threads, use_blink=True):
+    """
+    얼굴 분석 프로세스. use_blink=False(웹 버전 — 고개 돌리기로 확인한다)면 눈 깜빡임 검사 모델을
+    아예 불러오지 않아 프레임마다 15~20ms를 아낀다.
+    """
     import onnxruntime
+    from insightface.app.common import Face
 
     # 느린 기기(라즈베리파이)에서는 얼굴 분석 프로세스의 우선순위를 낮춘다 — 분석이 CPU를 다 써도
     # 카메라 읽기와 화면 그리기가 먼저 돌아서 화면이 멈추거나 카메라가 끊기지 않는다 (분석만 조금 늦어진다)
@@ -526,30 +556,54 @@ def face_inference_process(conn, threads):
 
     # 사진/영상 판별용 깜빡임 검출기 — mediapipe를 먼저 쓰고, 이 기기에서 안 되면(라즈베리파이 등)
     # 얼굴 인식 모델 묶음의 106점 윤곽 모델로 대신 잰다. 둘 다 없으면 깜빡임 검사는 꺼진다.
-    blink_landmarker = None if blink_mode_forced_to_landmark() else create_blink_detector()
+    blink_landmarker = None if (not use_blink or blink_mode_forced_to_landmark()) else create_blink_detector()
     blink_meter = None
-    if blink_landmarker is None:
+    if use_blink and blink_landmarker is None:
         blink_meter = create_landmark_blink_meter(opts)
         if blink_meter is not None:
             print("[출석] 눈 깜빡임 검사: mediapipe 대신 얼굴 윤곽 모델(2d106det)을 사용합니다.")
 
+    rec_model = app.models["recognition"]
+    liveness_model = app.addons.get("liveness")
+    tracked = []  # 앞 프레임의 얼굴들 [(bbox, embedding, 임베딩을 계산한 시각)]
+
     conn.send("ready")
     while True:
         frame = conn.recv()
-        faces = app.get(frame)
+        bboxes, kpss = app.det_model.detect(frame, max_num=0, metric="default")
+        now = time.perf_counter()
+        # 가장 큰 얼굴(= 인식 대상)을 맨 앞에 둔다 — 학생 등록도 faces[0]을 쓴다
+        order = sorted(range(bboxes.shape[0]),
+                       key=lambda i: -(bboxes[i, 2] - bboxes[i, 0]) * (bboxes[i, 3] - bboxes[i, 1]))
+        faces = [Face(bbox=bboxes[i, 0:4], kps=None if kpss is None else kpss[i], det_score=bboxes[i, 4])
+                 for i in order]
 
         # 깜빡임은 "인식된 얼굴"에서만 본다. 화면 전체로 보면 사진을 들고 있는 사람의
         # 깜빡임이 대신 잡혀서 사진이 통과한다. 가장 큰 얼굴(= 인식 대상)만 잘라서 검사한다.
         blink_score = None
-        liveness = None   # (is_live, status) — 위조판별 애드온 결과
+        liveness = None   # (is_live, status) — 위조판별 애드온 결과. 이번 프레임에 다시 재지 않았으면 None
         pose = None       # 고개 방향 (head_pose: 좌우, 상하) — 웹 버전의 고개 돌리기 확인에 쓴다
+        results, new_tracked = [], []
+        for rank, face in enumerate(faces):
+            reuse = _reusable_embedding(tracked, face.bbox, now)
+            if reuse is not None:
+                embedding, computed_at = reuse
+            else:
+                # 위조판별은 인식 대상(가장 큰 얼굴)만 — 기록·등록 판정에 쓰는 것은 그 얼굴뿐이다
+                if rank == 0 and liveness_model is not None:
+                    liveness_model.get(frame, face)
+                    liveness = (face.liveness.is_live, face.liveness.status)
+                rec_model.get(frame, face)
+                embedding, computed_at = face.embedding, now
+            new_tracked.append((face.bbox, embedding, computed_at))
+            results.append((face.bbox, embedding))
+        tracked = new_tracked
+
         if not faces and blink_meter is not None:
             blink_meter.no_face()
-        # 가장 큰 얼굴(= 인식 대상)을 맨 앞에 둔다 — 학생 등록도 faces[0]을 쓴다
-        faces = sorted(faces, key=lambda f: -(f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
         if faces:
             main_face = faces[0]
-            pose = head_pose(getattr(main_face, "kps", None))
+            pose = head_pose(main_face.kps)
             if blink_landmarker is not None:
                 face_crop = crop_face_region(frame, main_face.bbox)
                 # MediaPipe VIDEO 모드는 타임스탬프가 계속 커져야 한다
@@ -557,11 +611,7 @@ def face_inference_process(conn, threads):
             elif blink_meter is not None:
                 blink_score = blink_meter.score(frame, main_face)
 
-            result = getattr(main_face, "liveness", None)
-            if result is not None:
-                liveness = (result.is_live, result.status)
-
-        conn.send(([(f.bbox, f.embedding) for f in faces], blink_score, liveness, pose))
+        conn.send((results, blink_score, liveness, pose))
 
 
 def ensure_camera_permission(timeout=60):

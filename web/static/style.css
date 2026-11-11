@@ -491,14 +491,14 @@ main {
     linear-gradient(var(--muted), var(--muted)) center / 100% 1px no-repeat;
   opacity: 0.25;
 }
-/* 판 전체 크기의 투명한 층을 옮겨서 점을 움직인다 — 인식 결과가 띄엄띄엄 와도 사이를 부드럽게 잇는다 */
+/* 판 전체 크기의 투명한 층을 옮겨서 점을 움직인다 — 인식 결과 사이(약 0.04초)만 짧게 이어서 고개를 바로 따라온다 */
 .tg-dot-track {
   position: absolute;
   inset: 0;
   z-index: 2;
   display: grid;
   place-items: center;
-  transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: transform 0.1s linear;
   will-change: transform;
 }
 .tg-dot {

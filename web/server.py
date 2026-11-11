@@ -135,7 +135,7 @@ def go_idle():
 
 @app.websocket("/ws")
 async def ws_state(ws: WebSocket):
-    """상태가 바뀔 때마다 보낸다 (0.1초마다 확인)."""
+    """상태가 바뀔 때마다 보낸다 (0.03초마다 확인 — 고개 방향 점이 늦게 따라오지 않게)."""
     await ws.accept()
     sent = -1
     try:
@@ -144,7 +144,7 @@ async def ws_state(ws: WebSocket):
             if st["version"] != sent:
                 sent = st["version"]
                 await ws.send_json(st)
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.03)
     except (WebSocketDisconnect, RuntimeError):
         pass
 
