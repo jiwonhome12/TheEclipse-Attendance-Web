@@ -62,7 +62,6 @@
           </span>
         </button>
       </div>
-      <p class="idle-hint">버튼을 누른 뒤 카메라를 바라보고, 화면에 나오는 두 방향으로 고개를 돌리면 자동으로 기록됩니다</p>
       <p id="ai-status" class="ai-status" hidden></p>
     </section>
 
@@ -75,6 +74,7 @@
       <p id="verify-detail" class="detail"></p>
       <div class="card-foot">
         <span id="verify-remaining" class="remaining"></span>
+        <button id="btn-recenter" class="ghost" data-action="recenter" hidden>정면 다시 잡기</button>
         <button class="ghost" data-action="home">취소</button>
       </div>
     </section>
@@ -136,7 +136,6 @@
         <p class="pill">카메라 테스트</p>
         <h2 id="test-title"></h2>
         <p id="test-detail" class="detail"></p>
-        <p class="muted">기록은 남지 않습니다.</p>
         <div class="card-foot">
           <span id="test-remaining" class="remaining"></span>
           <button class="ghost" data-action="home">끝내기</button>

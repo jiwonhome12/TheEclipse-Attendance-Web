@@ -417,3 +417,27 @@ def set_google_key(req: KeyRequest, _admin=Depends(require_admin)):
                                  "Google Cloud → IAM 및 관리자 → 서비스 계정 → 키 → [JSON]으로 받은 파일을 골라주세요.")
     shutil.move(temp_path, core.GOOGLE_KEY_PATH)
     return {"key_email": email}
+
+
+MAX_IMPORT_BYTES = 200 * 1024 * 1024
+
+
+@router.post("/import-db")
+async def import_db(request: Request, _admin=Depends(require_admin)):
+    """다른 PC의 faces.db를 받아 이 PC의 DB에 합친다 (core.import_database). 파일 내용을 그대로 본문으로 받는다."""
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "파일이 비어 있습니다.")
+    if len(data) > MAX_IMPORT_BYTES:
+        raise HTTPException(400, "파일이 너무 큽니다.")
+    temp_path = core.DB_PATH + ".import.tmp"
+    with open(temp_path, "wb") as f:
+        f.write(data)
+    try:
+        result = core.import_database(temp_path)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        os.remove(temp_path)
+    engine_of(request).reload_users()  # 가져온 학생 얼굴을 바로 인식하게
+    return result

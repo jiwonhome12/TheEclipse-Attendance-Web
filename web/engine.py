@@ -20,7 +20,7 @@ import core
 # 화면 상태 (tkinter 앱과 같은 이름)
 #   idle       : 메인 화면. 카메라/얼굴 인식 꺼짐
 #   attendance : 출근/퇴근을 누른 뒤. 얼굴이 확인되면 자동으로 기록한다
-#   lookup     : [출석 조회]. 얼굴로 본인 확인만 하고 기록은 하지 않는다
+#   lookup     : [출석 조회]. 얼굴이 인식되면 바로 출석 현황을 보여준다 (고개 돌리기 없음, 기록 안 함)
 #   result     : 출근/퇴근 처리 결과 (카메라 꺼짐, 잠시 뒤 메인 화면으로)
 #   stats      : 본인 출석 현황 (카메라 꺼짐, 잠시 뒤 메인 화면으로)
 #   test       : [카메라 테스트]. 카메라와 인식 결과만 보여주고 기록은 하지 않는다
@@ -317,6 +317,22 @@ class AttendanceEngine:
                 self._set_card("turn", self.challenge.instruction(), "기준점을 다시 잡았습니다 — 처음 방향부터 돌려 주세요",
                                challenge=self.challenge.to_dict(self.last_pose))
 
+    def recenter_attendance(self):
+        """
+        출근/퇴근 확인 화면의 [정면 다시 잡기] — 지금 고개 방향을 정면(방향 판의 가운데)으로 다시 잡고
+        고개 돌리기를 처음 단계부터 다시 한다. 이번 학생에게만 쓰고, 다음 학생은 원래 기준으로 돌아간다.
+        """
+        with self._lock:
+            if self.mode != "attendance" or self.challenge is None:
+                return False
+            if not self.cached_faces or self.last_pose is None:
+                return False
+            self.challenge.recenter(tuple(self.last_pose))
+            name = self._display_name(self._candidate_user) if self._candidate_user else ""
+            self._set_card("turn", f"{name} 학생, {self.challenge.instruction()}" if name else self.challenge.instruction(),
+                           challenge=self.challenge.to_dict(self.last_pose))
+            return True
+
     def reopen_camera(self):
         """관리자 화면에서 카메라 번호를 바꿨다 — 캡처 스레드가 닫고 camera.txt의 번호로 다시 연다."""
         core.ACTIVE_CAMERA_INDEX = None  # 새로 연결될 때까지 이전 번호를 보여주지 않는다
@@ -601,9 +617,10 @@ class AttendanceEngine:
 
     def _process_attendance(self, faces, matched_user, pose):
         """
-        같은 학생이 RECOGNIZE_HOLD_SECONDS 동안 인식되면 고개 돌리기(상하좌우 중 무작위 2방향)를 시키고,
+        출석 조회(lookup)는 학생이 인식되면 바로 출석 현황을 보여준다.
+        출근/퇴근은 같은 학생이 RECOGNIZE_HOLD_SECONDS 동안 인식되면 고개 돌리기(상하좌우 중 무작위 2방향)를 시키고,
         다 돌린 뒤 정면에서 다시 그 학생으로 확인되고 위조판별까지 통과하면
-        출근/퇴근을 기록하거나(attendance) 출석 현황을 보여준다(lookup).
+        출근/퇴근을 기록한다.
         """
         now = time.time()
         if not self._face_present(faces):
@@ -625,14 +642,18 @@ class AttendanceEngine:
             return
 
         name = self._display_name(self._candidate_user)
+        student = {"user_id": self._candidate_id, "name": name}
+        if self.mode == "lookup":
+            # 출석 조회는 기록을 남기지 않으므로 고개 돌리기·위조판별 없이 인식되면 바로 보여준다
+            self._enter("stats", {"student": student, **self._stats_for(student["user_id"])})
+            return
         ch = self.challenge
         if now - self._candidate_since < core.RECOGNIZE_HOLD_SECONDS:
-            self._set_card("search", f"{name} 학생 얼굴 확인 중", "카메라를 바라봐 주세요")
+            self._set_card("search", f"{name} 학생 얼굴 확인 중")
             return
         ch.update(pose, embedding)
         if ch.done_at is None:
-            self._set_card("turn", f"{name} 학생, {ch.instruction()}", "화면의 안내를 따라 천천히 돌려 주세요",
-                           challenge=ch.to_dict(pose))
+            self._set_card("turn", f"{name} 학생, {ch.instruction()}", challenge=ch.to_dict(pose))
             return
         # 다 돌렸다 — 정면에서 같은 학생인지 다시 확인한다 (돌리는 사이 사람이 바뀌지 않았는지)
         if matched_user is None or matched_user["user_id"] != self._candidate_id:
@@ -644,13 +665,9 @@ class AttendanceEngine:
             elif self.last_liveness_status == "input_rejected":
                 self._set_card("warn", "얼굴이 너무 가깝습니다", "카메라에서 조금 물러나 주세요")
             else:
-                self._set_card("warn", f"{name} 학생 얼굴 확인 중", "카메라를 정면으로 바라봐 주세요")
+                self._set_card("warn", f"{name} 학생 얼굴 확인 중")
             return
 
-        student = {"user_id": self._candidate_id, "name": name}
-        if self.mode == "lookup":
-            self._enter("stats", {"student": student, **self._stats_for(student["user_id"])})
-            return
         log_type = self.pending_action
         success, detail = core.log_attendance(student["user_id"], name, log_type)
         self._enter("result", {"student": student, "log_type": log_type, "success": success,

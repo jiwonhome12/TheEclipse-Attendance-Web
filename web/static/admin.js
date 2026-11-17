@@ -713,6 +713,22 @@ $("key-file").addEventListener("change", guarded(async (e) => {
   await loadSettings();
 }));
 
+$("import-db-file").addEventListener("change", guarded(async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  if (!confirm(`${file.name}의 학생과 출결 기록을 이 PC에 합칠까요?
+(이미 있는 학번은 건너뛰고, 지금 DB는 백업해 둡니다)`)) return;
+  const resp = await fetch("/api/admin/import-db", {
+    method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
+  });
+  const data = await resp.json().catch(() => null);
+  if (resp.status === 401) { showLogin(); throw new Error("관리자 로그인이 필요합니다."); }
+  if (!resp.ok) throw new Error(data?.detail || `가져오기 실패 (${resp.status})`);
+  toast(`가져왔습니다. 학생·계정 ${data.users}명 추가(이미 있던 ${data.users_skipped}명 건너뜀), 출결 기록 ${data.logs}건 추가`);
+  if (TAB_LOADERS[currentTab]) await TAB_LOADERS[currentTab]();
+}));
+
 $("btn-form-url").addEventListener("click", guarded(async () => {
   await api("/settings/form-url", { method: "PUT", body: { url: $("form-url").value } });
   const res = await api("/roster");  // 바로 읽어 봐서 주소가 맞는지 알려준다

@@ -1241,6 +1241,68 @@ def init_db():
     conn.close()
 
 
+def import_database(src_path):
+    """
+    다른 PC의 출석체크 프로그램(앱/웹)이 쓰던 faces.db를 이 PC의 DB에 합친다.
+    - 학생/관리자: 이 PC에 없는 아이디만 추가한다 (이미 있으면 이 PC 것을 그대로 둔다)
+    - 출결 기록: 같은 (학번, 구분, 날짜, 시간) 기록이 없을 때만 추가한다 (여러 번 가져와도 겹치지 않는다)
+    - 출퇴근 사진은 옮겨지지 않으므로 사진 경로는 비운다
+    합치기 전에 이 PC의 faces.db를 faces.db.bak-날짜시간 으로 복사해 둔다.
+    돌려주는 값: {"users": 추가한 사람 수, "users_skipped": 이미 있어서 건너뛴 수, "logs": 추가한 기록 수, "backup": 백업 파일 경로}
+    """
+    try:
+        src = sqlite3.connect(f"file:{src_path}?mode=ro", uri=True)
+        src_tables = {r[0] for r in src.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    except sqlite3.DatabaseError:
+        raise ValueError("출석체크 DB 파일(faces.db)이 아닙니다.")
+    if "users" not in src_tables:
+        src.close()
+        raise ValueError("학생 정보(users)가 없는 DB입니다. 출석체크 프로그램 폴더의 faces.db를 골라주세요.")
+
+    init_db()
+    backup = f"{DB_PATH}.bak-{datetime.now():%Y%m%d-%H%M%S}"
+    shutil.copy2(DB_PATH, backup)
+
+    def columns(conn, table):
+        return [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+
+    dst = sqlite3.connect(DB_PATH)
+    try:
+        added_users = skipped_users = added_logs = 0
+        user_cols = [c for c in columns(src, "users") if c in columns(dst, "users") and c != "id"]
+        existing = {r[0] for r in dst.execute("SELECT user_id FROM users")}
+        for row in src.execute(f"SELECT {', '.join(user_cols)} FROM users"):
+            rec = dict(zip(user_cols, row))
+            if rec.get("user_id") in existing:
+                skipped_users += 1
+                continue
+            dst.execute(f"INSERT INTO users ({', '.join(rec)}) VALUES ({', '.join('?' * len(rec))})", tuple(rec.values()))
+            existing.add(rec.get("user_id"))
+            added_users += 1
+
+        if "attendance_logs" in src_tables:
+            log_cols = [c for c in columns(src, "attendance_logs")
+                        if c in columns(dst, "attendance_logs") and c not in ("id", "photo_path")]
+            seen = {tuple(r) for r in dst.execute(
+                "SELECT user_id, log_type, log_date, log_time FROM attendance_logs")}
+            for row in src.execute(f"SELECT {', '.join(log_cols)} FROM attendance_logs ORDER BY id"):
+                rec = dict(zip(log_cols, row))
+                key = (rec.get("user_id"), rec.get("log_type"), rec.get("log_date"), rec.get("log_time"))
+                if key in seen:
+                    continue
+                dst.execute(f"INSERT INTO attendance_logs ({', '.join(rec)}) VALUES ({', '.join('?' * len(rec))})",
+                            tuple(rec.values()))
+                seen.add(key)
+                added_logs += 1
+        dst.commit()
+    finally:
+        dst.close()
+        src.close()
+
+    export_attendance_json()  # 창공시스템이 읽는 출결 데이터도 바로 갱신
+    return {"users": added_users, "users_skipped": skipped_users, "logs": added_logs, "backup": backup}
+
+
 def load_timeouts():
     """settings.json에 저장된 메인 화면 복귀 시간을 timeouts에 읽어 온다. 없거나 범위를 벗어나면 기본값."""
     saved = load_settings()

@@ -218,6 +218,13 @@
         <small class="muted">시트 주소를 넣으면 Sheets API로 실시간으로 읽고, 비워 두면 창공시스템 명단(roster.json)을 씁니다.</small>
       </div>
       <div class="card">
+        <h3>다른 PC 데이터 가져오기</h3>
+        <div class="setting-row">
+          <div><strong>DB 파일 (faces.db)</strong><small>학생·관리자 계정과 출결 기록을 이 PC에 합칩니다</small></div>
+          <label class="ghost file-btn">파일 선택<input type="file" id="import-db-file" accept=".db" hidden></label>
+        </div>
+      </div>
+      <div class="card">
         <h3>주간 미달 안내 메일</h3>
         <small class="muted" id="mail-desc"></small>
         <div class="setting-row">

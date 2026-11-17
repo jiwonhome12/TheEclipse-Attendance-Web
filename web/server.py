@@ -126,6 +126,13 @@ def start_session(req: SessionRequest):
     return engine.state()
 
 
+@app.post("/api/recenter")
+def recenter():
+    """[정면 다시 잡기] — 고개 돌리기 중 지금 얼굴 방향을 정면으로 다시 잡는다."""
+    engine.recenter_attendance()
+    return engine.state()
+
+
 @app.post("/api/idle")
 def go_idle():
     if engine.state()["mode"] != "register":  # 관리자가 등록 중인 카메라는 키오스크에서 끄지 않는다

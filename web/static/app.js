@@ -31,6 +31,7 @@ document.addEventListener("click", (e) => {
   if (action === "staff-logout") {
     fetch("/api/staff/logout", { method: "POST" }).finally(() => { location.href = "/login"; });
   } else if (action === "home") post("/api/idle");
+  else if (action === "recenter") post("/api/recenter");
   else if (action === "lookup") post("/api/session", { mode: "lookup" });
   else if (action === "test") post("/api/session", { mode: "test" });
   else post("/api/session", { mode: "attendance", action });
@@ -83,10 +84,11 @@ function renderVerify(st) {
   const turning = Boolean(card.challenge);
   $("verify-visual").hidden = turning;
   $("verify-turn").hidden = !turning;
+  $("btn-recenter").hidden = !(turning && st.mode === "attendance");
   if (turning) renderTurnGuide($("verify-turn"), card.challenge);
   else setVisual($("verify-visual"), card.state);
   $("verify-title").textContent = card.title || "";
-  $("verify-detail").textContent = card.detail || "카메라를 바라봐 주세요";
+  $("verify-detail").textContent = card.detail || "";
 }
 
 // 카메라를 못 열면 인식 안내 대신 카메라 오류를 보여준다

@@ -137,6 +137,7 @@ main {
   margin-top: 32px;
 }
 .remaining { color: var(--muted); font-variant-numeric: tabular-nums; }
+#btn-recenter { margin-left: auto; margin-right: 10px; }
 
 /* ---------- 출석 화면 상단 (tkinter 시안과 같은 구성) ---------- */
 .kiosk-bar {
@@ -286,7 +287,6 @@ main {
 .action-foot svg { width: 1.6em; height: 1.6em; transition: transform 0.15s ease; }
 .action-card:hover .action-foot svg { transform: translateX(6px); }
 
-.idle-hint { text-align: center; color: var(--muted); font-size: 16px; margin: 36px 0 0; }
 .view.idle .ai-status { max-width: 640px; margin: 14px auto 0; text-align: center; }
 
 /* ---------- 상태 그림 ---------- */
