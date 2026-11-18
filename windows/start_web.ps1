@@ -59,6 +59,22 @@ if (-not $Python) {
 }
 Write-Host "사용할 파이썬: $Python"
 
+# ---------- Visual C++ 런타임 ----------
+# onnxruntime(얼굴 인식)은 최신 Visual C++ 런타임이 필요하다. 오래된 msvcp140.dll(14.40 미만)이면
+# 패키지는 설치돼 있어도 불러오는 순간 프로그램이 죽어서 얼굴 인식이 안 된다.
+$Msvcp = Get-Item "$env:SystemRoot\System32\msvcp140.dll" -ErrorAction SilentlyContinue
+if (-not $Msvcp -or $Msvcp.VersionInfo.FileMajorPart -lt 14 -or
+    ($Msvcp.VersionInfo.FileMajorPart -eq 14 -and $Msvcp.VersionInfo.FileMinorPart -lt 40)) {
+    $ver = if ($Msvcp) { $Msvcp.VersionInfo.FileVersion } else { "없음" }
+    Write-Host ""
+    Write-Host "Visual C++ 런타임이 오래되어 얼굴 인식이 동작하지 않습니다. (지금 버전: $ver)" -ForegroundColor Red
+    Write-Host "아래 주소의 설치 파일을 받아 설치한 뒤 다시 실행하세요:"
+    Write-Host "  https://aka.ms/vs/17/release/vc_redist.x64.exe" -ForegroundColor Cyan
+    $answer = Read-Host "지금 다운로드 페이지를 열까요? (Y/N)"
+    if ($answer -match '^[Yy]') { Start-Process "https://aka.ms/vs/17/release/vc_redist.x64.exe" }
+    exit 1
+}
+
 # ---------- 패키지 ----------
 & $Python -c "import fastapi, uvicorn, websockets, cv2, numpy, PIL, insightface, onnxruntime" 2>$null
 if ($LASTEXITCODE -ne 0) {

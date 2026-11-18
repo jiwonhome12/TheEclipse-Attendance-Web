@@ -36,9 +36,19 @@ VIDEO_FPS = 10 if core.LOW_POWER else 20  # 브라우저로 보내는 영상의 
 engine = None  # 서버가 뜰 때 만든다 (얼굴 인식 프로세스가 이 파일을 다시 불러와도 엔진은 하나만 생기게)
 
 
+def _log_thread_crash(args):
+    """백그라운드 스레드(카메라·인식 등)가 예외로 죽으면 콘솔에만 찍히고 로그에는 안 남는다 — 로그에도 남긴다."""
+    import traceback
+    tb = "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
+    diag.event("[서버] 스레드 %s 가 오류로 멈췄습니다\n%s", getattr(args.thread, "name", "?"), tb.rstrip(),
+               level=diag.logging.ERROR)
+
+
 @asynccontextmanager
 async def lifespan(_app):
     global engine
+    import threading
+    threading.excepthook = _log_thread_crash
     from engine import AttendanceEngine
     engine = AttendanceEngine()
     _app.state.engine = engine  # 관리자 API(admin_api.py)가 쓴다

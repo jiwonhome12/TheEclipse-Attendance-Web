@@ -531,7 +531,16 @@ class AttendanceEngine:
                         self._process_camera_test(results, matched_user, best_sim, pose)
         except (EOFError, OSError) as e:
             if self.is_running:
-                event("[인식] 얼굴 인식 프로세스가 멈췄습니다 (%s: %s)", type(e).__name__, e, level=diag.logging.ERROR)
+                self.face_proc.join(timeout=2)
+                code = self.face_proc.exitcode
+                event("[인식] 얼굴 인식 프로세스가 멈췄습니다 (%s: %s, 종료 코드 %s)", type(e).__name__, e,
+                      "?" if code is None else "0x%08X" % (code & 0xFFFFFFFF), level=diag.logging.ERROR)
+                if code is not None and (code & 0xFFFFFFFF) == 0xC0000005:
+                    # 메모리 접근 오류로 죽었다 — 거의 항상 Windows의 Visual C++ 런타임(msvcp140.dll)이 오래돼서
+                    # onnxruntime을 불러오다 죽는 경우다. 최신 재배포 패키지를 설치하면 해결된다.
+                    event("[인식] Visual C++ 런타임이 오래되었을 수 있습니다. "
+                          "https://aka.ms/vs/17/release/vc_redist.x64.exe 를 설치한 뒤 서버를 다시 켜세요.",
+                          level=diag.logging.ERROR)
                 self.ai_failed = True
                 self._changed()
 
