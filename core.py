@@ -13,6 +13,9 @@ os.environ.setdefault("GLOG_stderrthreshold", "3")
 os.environ.setdefault("GLOG_logtostderr", "0")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "3")
+# 윈도우 Media Foundation(MSMF) 카메라는 GPU 변환을 켜 두면 여는 데 7~8초씩 걸린다. 끄면 0.5초 안에 열린다.
+# (OpenCV가 카메라를 처음 열 때 읽는 값이라 카메라를 열기 전에만 정하면 된다)
+os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
 
 import collections
 import contextlib
@@ -521,9 +524,9 @@ def _reusable_embedding(tracked, bbox, now):
     return best
 
 
-def face_inference_process(conn, threads, use_blink=True):
+def face_inference_process(conn, threads, blink=True):
     """
-    얼굴 분석 프로세스. use_blink=False(웹 버전 — 고개 돌리기로 확인한다)면 눈 깜빡임 검사 모델을
+    얼굴 분석 프로세스. blink=False(웹 버전 — 고개 돌리기로 확인한다)면 눈 깜빡임 검사 모델을
     아예 불러오지 않아 프레임마다 15~20ms를 아낀다.
     """
     import onnxruntime
@@ -556,9 +559,9 @@ def face_inference_process(conn, threads, use_blink=True):
 
     # 사진/영상 판별용 깜빡임 검출기 — mediapipe를 먼저 쓰고, 이 기기에서 안 되면(라즈베리파이 등)
     # 얼굴 인식 모델 묶음의 106점 윤곽 모델로 대신 잰다. 둘 다 없으면 깜빡임 검사는 꺼진다.
-    blink_landmarker = None if (not use_blink or blink_mode_forced_to_landmark()) else create_blink_detector()
+    blink_landmarker = None if (not blink or blink_mode_forced_to_landmark()) else create_blink_detector()
     blink_meter = None
-    if use_blink and blink_landmarker is None:
+    if blink and blink_landmarker is None:
         blink_meter = create_landmark_blink_meter(opts)
         if blink_meter is not None:
             print("[출석] 눈 깜빡임 검사: mediapipe 대신 얼굴 윤곽 모델(2d106det)을 사용합니다.")
@@ -645,21 +648,51 @@ def ensure_camera_permission(timeout=60):
     return result.get("granted", False)
 
 
-def open_camera(index=0):
+# 카메라를 여는 방식(백엔드) — OS마다 시도할 순서.
+# 윈도우: 카메라에 따라 DirectShow(DSHOW)로 열면 초당 1장 정도만 오고 화면이 거의 검게 나오는 경우가 있다
+#   (실측: 같은 카메라가 DSHOW 1fps·밝기 0 / MSMF 30fps·밝기 129). 그래서 MSMF를 먼저 쓰고,
+#   켜진 뒤 잰 속도를 방식별로 settings.json에 기억해서(camera_backend_fps) 더 잘 되는 방식을 먼저 쓴다.
+CAMERA_BACKENDS = {"msmf": cv2.CAP_MSMF, "dshow": cv2.CAP_DSHOW,
+                   "avfoundation": cv2.CAP_AVFOUNDATION, "v4l2": cv2.CAP_V4L2}
+CAMERA_MIN_FPS = 8          # 켜진 뒤 이보다 느리면 다른 방식으로 바꿔 본다
+CAMERA_MIN_BRIGHTNESS = 3   # 화면 평균 밝기(0~255)가 이보다 낮으면 검은 화면으로 본다
+
+
+def camera_backend_order():
     """
-    OS에 맞는 백엔드로 웹캠을 연다.
-    - Windows: DSHOW가 MSMF와 FPS는 같고 여는 속도가 훨씬 빠르다
-    - macOS: DSHOW가 없으므로 AVFoundation을 쓴다
-    - 그 외(리눅스 등)는 V4L2
-    원하는 백엔드로 못 열면 OpenCV 기본값(CAP_ANY)으로 한 번 더 시도한다.
+    이 OS에서 시도할 카메라 여는 방식. 잘 됐던 방식(빠른 순) → 아직 안 재 본 방식 → 느렸던 방식.
     """
     if IS_WINDOWS:
-        backend = cv2.CAP_DSHOW
+        order = ["msmf", "dshow"]
     elif IS_MAC:
-        backend = cv2.CAP_AVFOUNDATION
+        order = ["avfoundation"]
     else:
-        backend = cv2.CAP_V4L2
-    cap = cv2.VideoCapture(index, backend)
+        order = ["v4l2"]
+    measured = load_settings().get("camera_backend_fps") or {}
+
+    def rank(name):
+        fps = measured.get(name)
+        if fps is None:
+            return (1, order.index(name))
+        return (0, -fps) if fps >= CAMERA_MIN_FPS else (2, -fps)
+
+    return sorted(order, key=rank)
+
+
+def record_camera_backend_fps(name, fps):
+    """켜진 카메라에서 잰 초당 프레임을 방식별로 기억한다 (밝기가 0이면 0fps로 적는다)."""
+    measured = dict(load_settings().get("camera_backend_fps") or {})
+    measured[name] = round(fps, 1)
+    save_setting("camera_backend_fps", measured)
+
+
+def open_camera(index=0, backend=None):
+    """
+    웹캠을 연다. backend(CAMERA_BACKENDS 이름)를 주지 않으면 이 OS의 첫 번째 방식으로 연다.
+    원하는 방식으로 못 열면 OpenCV 기본값(CAP_ANY)으로 한 번 더 시도한다.
+    """
+    backend = backend or camera_backend_order()[0]
+    cap = cv2.VideoCapture(index, CAMERA_BACKENDS[backend])
     if not cap.isOpened():
         cap.release()
         cap = cv2.VideoCapture(index)
@@ -736,26 +769,45 @@ def open_working_camera(width=640, height=480, fps=30):
     라즈베리파이에는 영상이 안 나오는 내부 장치(/dev/video10 이후 코덱 장치 등)도 있어서
     '열림'만 보지 않고 첫 영상을 실제로 받아 본다.
     """
+    global ACTIVE_CAMERA_INDEX, ACTIVE_CAMERA_BACKEND
     for index in camera_candidates():
-        cap = open_camera(index)
-        if not cap.isOpened():
+        for backend in camera_backend_order():
+            cap = open_camera(index, backend)
+            if not cap.isOpened():
+                cap.release()
+                continue
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            cap.set(cv2.CAP_PROP_FPS, fps)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # 밀린 옛 프레임 대신 항상 최신 프레임
+            for _ in range(20):  # 켜자마자는 몇 장 비어서 올 수 있다
+                ok, _frame = cap.read()
+                if ok:
+                    ACTIVE_CAMERA_INDEX, ACTIVE_CAMERA_BACKEND = index, backend
+                    if index != 0:
+                        print(f"[출석] 카메라 {index}번 장치로 연결했습니다.")
+                    return cap
+                time.sleep(0.05)
             cap.release()
-            continue
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        cap.set(cv2.CAP_PROP_FPS, fps)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # 밀린 옛 프레임 대신 항상 최신 프레임
-        for _ in range(20):  # 켜자마자는 몇 장 비어서 올 수 있다
-            ok, _frame = cap.read()
-            if ok:
-                global ACTIVE_CAMERA_INDEX
-                ACTIVE_CAMERA_INDEX = index
-                if index != 0:
-                    print(f"[출석] 카메라 {index}번 장치로 연결했습니다.")
-                return cap
-            time.sleep(0.05)
-        cap.release()
     return None
+
+
+ACTIVE_CAMERA_BACKEND = None  # 지금 카메라를 연 방식 (CAMERA_BACKENDS 이름)
+
+
+def check_camera_backend(fps, brightness):
+    """
+    켜진 카메라를 잠깐 지켜본 결과를 기억하고, 더 나을 수 있는 다른 여는 방식이 있으면 그 이름을 돌려준다.
+    (검은 화면만 오면 0fps로 친다) 지금 방식이 괜찮거나 바꿀 방식이 없으면 None.
+    """
+    if ACTIVE_CAMERA_BACKEND is None:
+        return None
+    effective = 0.0 if brightness < CAMERA_MIN_BRIGHTNESS else fps
+    record_camera_backend_fps(ACTIVE_CAMERA_BACKEND, effective)
+    if effective >= CAMERA_MIN_FPS:
+        return None
+    best = camera_backend_order()[0]
+    return best if best != ACTIVE_CAMERA_BACKEND else None
 
 # ==========================================
 # 0-1. 카메라 화면에 한글 이름을 그리기 위한 폰트

@@ -14,6 +14,7 @@ import multiprocessing
 import os
 import re
 import sys
+import time
 from contextlib import asynccontextmanager
 
 # 프로젝트 폴더의 core.py를 불러오기 위해 (python web/server.py 로 실행해도 되게)
@@ -26,6 +27,7 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 import admin_api  # noqa: E402
+import diag  # noqa: E402
 import staff_auth  # noqa: E402
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -34,15 +36,48 @@ VIDEO_FPS = 10 if core.LOW_POWER else 20  # 브라우저로 보내는 영상의 
 engine = None  # 서버가 뜰 때 만든다 (얼굴 인식 프로세스가 이 파일을 다시 불러와도 엔진은 하나만 생기게)
 
 
+def _log_thread_crash(args):
+    """백그라운드 스레드(카메라·인식 등)가 예외로 죽으면 콘솔에만 찍히고 로그에는 안 남는다 — 로그에도 남긴다."""
+    import traceback
+    tb = "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
+    diag.event("[서버] 스레드 %s 가 오류로 멈췄습니다\n%s", getattr(args.thread, "name", "?"), tb.rstrip(),
+               level=diag.logging.ERROR)
+
+
 @asynccontextmanager
 async def lifespan(_app):
     global engine
+    import threading
+    threading.excepthook = _log_thread_crash
     from engine import AttendanceEngine
     engine = AttendanceEngine()
     _app.state.engine = engine  # 관리자 API(admin_api.py)가 쓴다
+    diag.event("[서버] 시작 (python %s, 영상 %dfps, 저전력 %s)", sys.version.split()[0], VIDEO_FPS, core.LOW_POWER)
+    diag.start_summary_thread(engine)
+    lag_task = asyncio.create_task(watch_loop_lag())
     core.start_weekly_mail_scheduler()  # 목요일 06:00 이후 주간 미달 학생에게 안내 메일 (core.py 3-1)
     yield
+    lag_task.cancel()
+    diag.event("[서버] 종료")
     engine.close()
+
+
+LOOP_LAG_STEP = 0.05     # 이 간격으로 깨어나서, 늦게 깨어난 만큼을 '서버 멈춤'으로 잰다
+LOOP_LAG_WARN_MS = 300   # 이보다 오래 멈추면 따로 경고를 남긴다
+
+
+async def watch_loop_lag():
+    """
+    서버의 이벤트 루프가 다른 일에 붙잡혀 멈춘 시간을 잰다. 루프가 멈추면 웹소켓(화면 전환)·영상·버튼 요청이
+    한꺼번에 늦어져서 영상이 끊기고 화면이 깜빡이는 것처럼 보인다.
+    """
+    while True:
+        started = time.perf_counter()
+        await asyncio.sleep(LOOP_LAG_STEP)
+        lag_ms = (time.perf_counter() - started - LOOP_LAG_STEP) * 1000
+        diag.meter.time_ms("loop_lag_ms", max(0.0, lag_ms))
+        if lag_ms > LOOP_LAG_WARN_MS:
+            diag.event("[서버] 이벤트 루프가 %.0fms 동안 멈췄습니다", lag_ms, level=diag.logging.WARNING)
 
 
 class RevalidatedStaticFiles(StaticFiles):
@@ -62,6 +97,20 @@ app.mount("/static", RevalidatedStaticFiles(directory=STATIC_DIR), name="static"
 app.mount("/assets", RevalidatedStaticFiles(directory=os.path.join(core.RESOURCE_DIR, "assets")), name="assets")
 app.include_router(admin_api.router)
 app.include_router(staff_auth.router)
+
+SLOW_REQUEST_MS = 1000
+
+
+@app.middleware("http")
+async def log_slow_requests(request: Request, call_next):
+    started = time.perf_counter()
+    response = await call_next(request)
+    ms = (time.perf_counter() - started) * 1000
+    # 영상 스트림은 계속 이어지는 응답이라 빼고, 오류 응답과 느린 요청만 남긴다
+    if request.url.path != "/video.mjpg" and (ms > SLOW_REQUEST_MS or response.status_code >= 500):
+        diag.event("[요청] %s %s → %d (%.0fms)", request.method, request.url.path, response.status_code, ms,
+                   level=diag.logging.WARNING)
+    return response
 
 
 # 로그인 여부에 따라 달라지는 페이지 — 브라우저가 저장해 둔 화면을 그대로 띄우면 로그아웃해도 출석 화면이 보인다
@@ -136,24 +185,50 @@ def recenter():
 @app.post("/api/idle")
 def go_idle():
     if engine.state()["mode"] != "register":  # 관리자가 등록 중인 카메라는 키오스크에서 끄지 않는다
-        engine.go_idle()
+        engine.go_idle("출석 화면 [처음으로]")
     return engine.state()
+
+
+class ClientLog(BaseModel):
+    page: str = ""
+    message: str
+
+
+_client_log_times = []  # 브라우저가 오류를 쏟아내도 로그가 넘치지 않게 1분에 60건까지만 받는다
+
+
+@app.post("/api/log")
+def client_log(req: ClientLog, request: Request):
+    """브라우저에서 생긴 문제(웹소켓 끊김, 영상 끊김, 스크립트 오류)를 서버 로그에 같이 남긴다."""
+    now = time.time()
+    _client_log_times[:] = [t for t in _client_log_times if now - t < 60]
+    if len(_client_log_times) < 60:
+        _client_log_times.append(now)
+        diag.event("[브라우저 %s %s] %s", request.client.host if request.client else "?", req.page[:20],
+                   req.message[:500])
+    return {}
 
 
 @app.websocket("/ws")
 async def ws_state(ws: WebSocket):
     """상태가 바뀔 때마다 보낸다 (0.03초마다 확인 — 고개 방향 점이 늦게 따라오지 않게)."""
     await ws.accept()
+    who = f"{ws.client.host if ws.client else '?'} {ws.headers.get('referer', '').rsplit('/', 1)[-1] or '/'}"
+    diag.event("[웹소켓] 접속 %s (지금 %d개)", who, diag.gauge_add("ws_clients", 1))
     sent = -1
+    reason = "끊김"
     try:
         while True:
             st = engine.state()
             if st["version"] != sent:
                 sent = st["version"]
                 await ws.send_json(st)
+                diag.meter.count("ws_sent")
             await asyncio.sleep(0.03)
-    except (WebSocketDisconnect, RuntimeError):
-        pass
+    except (WebSocketDisconnect, RuntimeError) as e:
+        reason = type(e).__name__
+    finally:
+        diag.event("[웹소켓] 종료 %s (%s, 남은 %d개)", who, reason, diag.gauge_add("ws_clients", -1))
 
 
 @app.get("/video.mjpg")
@@ -165,15 +240,28 @@ async def video(request: Request):
     if request.client.host not in ("127.0.0.1", "::1") and admin_api.admin_session(request) is None:
         raise HTTPException(403, "카메라 화면은 키오스크 PC나 관리자 로그인 후에만 볼 수 있습니다.")
 
+    who = request.client.host if request.client else "?"
+
     async def frames():
-        last_seq = -1
-        while True:
-            seq = engine.frame_seq
-            jpg = engine.jpeg_frame() if seq != last_seq else None
-            if jpg:
-                last_seq = seq
-                yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
-            await asyncio.sleep(1 / VIDEO_FPS)
+        diag.event("[영상] 시청 시작 %s (지금 %d명)", who, diag.gauge_add("stream_clients", 1))
+        try:
+            last_seq = -1
+            next_at = time.perf_counter()
+            while True:
+                # 인코딩에 걸린 시간을 빼고 기다려서 정해진 초당 장수(VIDEO_FPS)를 지킨다
+                next_at += 1 / VIDEO_FPS
+                seq, jpg = await asyncio.to_thread(engine.stream_jpeg, last_seq)
+                if jpg:
+                    last_seq = seq
+                    diag.meter.count("stream_sent")
+                    diag.meter.count("stream_bytes", len(jpg))
+                    yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
+                now = time.perf_counter()
+                if next_at < now:
+                    next_at = now  # 많이 밀렸으면 따라잡으려 몰아 보내지 않고 지금부터 다시 센다
+                await asyncio.sleep(next_at - now)
+        finally:
+            diag.event("[영상] 시청 끝 %s (남은 %d명)", who, diag.gauge_add("stream_clients", -1))
 
     return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 

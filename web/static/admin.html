@@ -245,6 +245,20 @@
         <small class="muted" id="mail-last"></small>
         <small class="muted">스크립트 코드와 설치 방법: 프로그램 폴더의 tools\weekly_mail_apps_script.gs</small>
       </div>
+      <div class="card diag-card">
+        <div class="card-head">
+          <div>
+            <h3>진단 로그</h3>
+            <small class="muted">영상이 끊기거나 인식이 안 될 때 원인을 찾는 기록입니다. 문제가 생기면 [로그 내려받기] 파일을 보내 주세요.</small>
+          </div>
+          <div class="head-actions">
+            <button class="ghost" id="btn-diag-refresh">새로고침</button>
+            <a class="ghost" id="btn-diag-download" href="/api/admin/diagnostics/log">로그 내려받기</a>
+          </div>
+        </div>
+        <div id="diag-latest" class="diag-latest"></div>
+        <pre id="diag-tail" class="diag-tail"></pre>
+      </div>
     </section>
   </main>
 

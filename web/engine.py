@@ -16,6 +16,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 import core
+import diag
+from diag import event, meter
 
 # 화면 상태 (tkinter 앱과 같은 이름)
 #   idle       : 메인 화면. 카메라/얼굴 인식 꺼짐
@@ -27,7 +29,8 @@ import core
 #   register   : 관리자 [학생 등록] 탭이 열려 있다. 카메라를 켜고 등록할 얼굴을 기다린다
 SESSION_MODES = ("attendance", "lookup", "test")
 REGISTER_HEARTBEAT_SECONDS = 60  # 관리자 화면이 이 시간 동안 소식이 없으면(창을 닫았으면) 카메라를 끈다
-FACE_LOST_SECONDS = 2.0          # 얼굴이 이 시간 넘게 안 보이면 고개 돌리기를 처음부터 다시 한다
+CAMERA_HEALTH_SECONDS = 2.0     # 카메라를 켜고 이만큼 지켜본 뒤 속도·밝기를 확인한다 (core.check_camera_backend)
+FACE_LOST_SECONDS = 2.0         # 얼굴이 이 시간 넘게 안 보이면 고개 돌리기를 처음부터 다시 한다
 TURN_IDENTITY_SIM = 0.30         # 고개를 돌린 얼굴이 처음 얼굴과 이만큼은 닮아야 같은 사람이 돌린 것으로 센다
 # 고개 돌리기 방향 — (화면에 보이는 이름, 안내 문구)
 TURN_DIRECTIONS = {
@@ -161,6 +164,8 @@ class AttendanceEngine:
         self.frame_seq = 0
         self.face_labels = []           # 영상에 그릴 (bbox, 글자, 등록 여부) — 인식 결과가 올 때마다 바뀐다
         self.face_labels_seq = -1       # face_labels를 계산한 프레임 번호
+        self._jpeg_lock = threading.Lock()
+        self._jpeg_cache = (-1, None)   # (프레임 번호, JPEG) — 영상을 보는 사람들이 나눠 쓴다 (stream_jpeg)
 
         # InsightFace 위조판별 애드온 상태 (애드온이 결과를 보내주면 켜진다)
         self.antispoof_enabled = False
@@ -174,8 +179,7 @@ class AttendanceEngine:
         threads = core.INFERENCE_THREADS if core.LOW_POWER else max(core.INFERENCE_THREADS, (os.cpu_count() or 4) // 2)
         self.face_conn, child_conn = multiprocessing.Pipe()
         self.face_proc = multiprocessing.Process(
-            target=core.face_inference_process, args=(child_conn, threads),
-            kwargs={"use_blink": False}, daemon=True
+            target=core.face_inference_process, args=(child_conn, threads, False), daemon=True
         )
         self.face_proc.start()
 
@@ -217,6 +221,10 @@ class AttendanceEngine:
     def _changed(self):
         self.version += 1
 
+    def _log_mode(self, old, new, why):
+        if old != new:
+            event("[모드] %s → %s (%s)", old, new, why)
+
     def _set_card(self, state, title, detail="", sim=None, challenge=None):
         card = {"state": state, "title": title, "detail": detail, "sim": sim, "challenge": challenge}
         if card != self.card:
@@ -256,7 +264,9 @@ class AttendanceEngine:
             raise ValueError(action)
         with self._lock:
             if self.mode == "register":
+                event("[모드] %s 시작 거절 — 관리자가 학생 등록 중", mode)
                 raise RuntimeError("관리자가 학생을 등록하는 중입니다.")
+            self._log_mode(self.mode, mode, f"버튼 {action or mode}")
             self.mode = mode
             self.pending_action = action if mode == "attendance" else None
             self.session_started = time.time()
@@ -269,9 +279,9 @@ class AttendanceEngine:
             self._set_camera(True)
             self._changed()
 
-    def go_idle(self):
+    def go_idle(self, why="처음으로 버튼"):
         with self._lock:
-            self._enter("idle", None)
+            self._enter("idle", None, why)
 
     def keep_register_camera(self):
         """
@@ -282,6 +292,7 @@ class AttendanceEngine:
             if self.mode == "register":
                 self.session_started = time.time()
                 return
+            self._log_mode(self.mode, "register", "관리자 학생 등록 탭")
             self.mode = "register"
             self.pending_action = None
             self.payload = None
@@ -298,7 +309,7 @@ class AttendanceEngine:
     def stop_register_camera(self):
         with self._lock:
             if self.mode == "register":
-                self._enter("idle", None)
+                self._enter("idle", None, "관리자 학생 등록 탭 닫음")
 
     def recenter_register(self):
         """
@@ -372,8 +383,9 @@ class AttendanceEngine:
         with self._lock:
             self._reset_candidate()  # 다음 학생은 고개 돌리기부터 다시
 
-    def _enter(self, mode, payload):
+    def _enter(self, mode, payload, why=""):
         """세션이 끝나 결과 / 출석 현황 / 메인 화면으로 넘어간다 — 카메라는 끈다."""
+        self._log_mode(self.mode, mode, why)
         self.mode = mode
         self.pending_action = None
         self.payload = payload
@@ -386,6 +398,7 @@ class AttendanceEngine:
     def _set_camera(self, on):
         if on == self.camera_on:
             return
+        event("[카메라] %s 요청", "켜기" if on else "끄기")
         self.camera_generation += 1
         self.camera_on = on
         self.latest_frame = None
@@ -411,6 +424,7 @@ class AttendanceEngine:
         """camera_on에 맞춰 카메라를 열고 닫으며, 켜져 있는 동안 최신 프레임 1장만 보관한다."""
         cap = None
         last_frame_time = 0.0
+        health_started, health_frames, health_checked = 0.0, 0, True
         while self.is_running:
             try:
                 if self.camera_reopen:
@@ -423,26 +437,36 @@ class AttendanceEngine:
                     if cap is not None:
                         cap.release()
                         cap = None
+                        event("[카메라] 닫힘")
                     time.sleep(0.05)
                     continue
 
                 if cap is None:
+                    opened_at = time.time()
                     cap = core.open_working_camera(640, 480, core.CAMERA_FPS)
                     if cap is None:
+                        event("[카메라] 열기 실패 (%.1f초 걸림) — 1초 뒤 다시 시도", time.time() - opened_at,
+                              level=diag.logging.WARNING)
                         if not self.camera_error:
                             self.camera_error = True
                             self._changed()
                         time.sleep(1.0)
                         continue
+                    event("[카메라] %s번 열림 (%s, %.1f초 걸림, %dx%d)", core.ACTIVE_CAMERA_INDEX,
+                          core.ACTIVE_CAMERA_BACKEND, time.time() - opened_at,
+                          int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
                     if self.camera_error:
                         self.camera_error = False
                         self._changed()
                     last_frame_time = time.time()
+                    health_started, health_frames, health_checked = time.time(), 0, False
 
                 ret, frame = cap.read()
                 if not ret:
+                    meter.count("read_fail")
                     if time.time() - last_frame_time > core.CAMERA_STALL_SECONDS:
-                        print(f"[출석] 카메라에서 {core.CAMERA_STALL_SECONDS:.0f}초간 영상이 오지 않아 다시 연결합니다.")
+                        event("[카메라] %.0f초간 영상이 오지 않아 다시 연결합니다", core.CAMERA_STALL_SECONDS,
+                              level=diag.logging.WARNING)
                         cap.release()
                         cap = None
                         self.camera_error = True
@@ -451,11 +475,27 @@ class AttendanceEngine:
                         time.sleep(0.02)
                     continue
                 last_frame_time = time.time()
+                meter.count("frame")
+                health_frames += 1
+                if not health_checked and last_frame_time - health_started >= CAMERA_HEALTH_SECONDS:
+                    # 켜고 몇 초 지켜본다 — 너무 느리거나 검은 화면이면 다른 방식으로 다시 연다
+                    health_checked = True
+                    fps = health_frames / (last_frame_time - health_started)
+                    brightness = float(frame[::8, ::8].mean())
+                    used = core.ACTIVE_CAMERA_BACKEND
+                    better = core.check_camera_backend(fps, brightness)
+                    event("[카메라] 상태 %s: %.1ffps · 밝기 %.0f/255%s", used, fps, brightness,
+                          f" → 너무 느리거나 어두워서 {better} 방식으로 다시 엽니다" if better else "",
+                          level=diag.logging.WARNING if better or fps < core.CAMERA_MIN_FPS else diag.logging.INFO)
+                    if better:
+                        cap.release()
+                        cap = None
+                        continue
                 if self.camera_on:
                     self.latest_frame = cv2.flip(frame, 1)
                     self.frame_seq += 1
             except Exception as e:
-                print(f"[출석] 카메라 처리 중 오류가 있었지만 계속 진행합니다 ({type(e).__name__}: {e})")
+                event("[카메라] 처리 중 오류 — 다시 엽니다 (%s: %s)", type(e).__name__, e, level=diag.logging.ERROR)
                 if cap is not None:
                     cap.release()
                     cap = None
@@ -467,7 +507,9 @@ class AttendanceEngine:
     def _ai_worker(self):
         """최신 프레임을 인식 프로세스로 보내고, 결과가 오면 출근/퇴근 흐름을 한 걸음 진행한다."""
         try:
+            loading_started = time.time()
             self.face_conn.recv()  # 모델 로딩 완료 신호
+            event("[인식] 모델 준비 완료 (%.1f초)", time.time() - loading_started)
             with self._lock:
                 self.ai_ready = True
                 if self.card.get("state") == "loading":
@@ -486,6 +528,10 @@ class AttendanceEngine:
                 self.face_conn.send(frame)
                 # 눈 깜빡임 값은 tkinter 앱만 쓴다 — 웹은 고개 방향(pose)으로 확인한다
                 results, _blink, liveness, pose = self.face_conn.recv()
+                meter.count("ai")
+                meter.time_ms("ai_ms", (time.time() - started) * 1000)
+                if results:
+                    meter.count("faces")
                 rest = core.AI_MIN_INTERVAL - (time.time() - started)
                 if rest > 0:
                     time.sleep(rest)
@@ -503,8 +549,18 @@ class AttendanceEngine:
                         self._process_register(results, matched_user, pose)
                     elif self.mode == "test":
                         self._process_camera_test(results, matched_user, best_sim, pose)
-        except (EOFError, OSError):
+        except (EOFError, OSError) as e:
             if self.is_running:
+                self.face_proc.join(timeout=2)
+                code = self.face_proc.exitcode
+                event("[인식] 얼굴 인식 프로세스가 멈췄습니다 (%s: %s, 종료 코드 %s)", type(e).__name__, e,
+                      "?" if code is None else "0x%08X" % (code & 0xFFFFFFFF), level=diag.logging.ERROR)
+                if code is not None and (code & 0xFFFFFFFF) == 0xC0000005:
+                    # 메모리 접근 오류로 죽었다 — 거의 항상 Windows의 Visual C++ 런타임(msvcp140.dll)이 오래돼서
+                    # onnxruntime을 불러오다 죽는 경우다. 최신 재배포 패키지를 설치하면 해결된다.
+                    event("[인식] Visual C++ 런타임이 오래되었을 수 있습니다. "
+                          "https://aka.ms/vs/17/release/vc_redist.x64.exe 를 설치한 뒤 서버를 다시 켜세요.",
+                          level=diag.logging.ERROR)
                 self.ai_failed = True
                 self._changed()
 
@@ -516,7 +572,7 @@ class AttendanceEngine:
             if st["deadline"] is not None and time.time() >= st["deadline"]:
                 with self._lock:
                     if self.mode == st["mode"]:  # 그사이 다른 화면으로 넘어가지 않았을 때만
-                        self._enter("idle", None)
+                        self._enter("idle", None, "시간 초과")
             today = date.today()
             if today != self._photo_cleanup_date:
                 self._photo_cleanup_date = today
@@ -645,7 +701,7 @@ class AttendanceEngine:
         student = {"user_id": self._candidate_id, "name": name}
         if self.mode == "lookup":
             # 출석 조회는 기록을 남기지 않으므로 고개 돌리기·위조판별 없이 인식되면 바로 보여준다
-            self._enter("stats", {"student": student, **self._stats_for(student["user_id"])})
+            self._enter("stats", {"student": student, **self._stats_for(student["user_id"])}, "출석 조회 확인")
             return
         ch = self.challenge
         if now - self._candidate_since < core.RECOGNIZE_HOLD_SECONDS:
@@ -671,7 +727,8 @@ class AttendanceEngine:
         log_type = self.pending_action
         success, detail = core.log_attendance(student["user_id"], name, log_type)
         self._enter("result", {"student": student, "log_type": log_type, "success": success,
-                               "detail": detail, "today": core.get_today_attendance_status(student["user_id"])})
+                               "detail": detail, "today": core.get_today_attendance_status(student["user_id"])},
+                    f"{name} {log_type} {'성공' if success else '실패'}")
 
     def _process_camera_test(self, faces, matched_user, best_sim, pose):
         # 고개 방향 값도 같이 보여준다 — HEAD_TURN_RATIO / HEAD_PITCH_DELTA를 이 카메라에 맞게 조정할 때 참고한다
@@ -696,8 +753,29 @@ class AttendanceEngine:
         }
 
     # ---------- 영상 ----------
+    def stream_jpeg(self, after_seq):
+        """
+        after_seq 다음의 새 프레임 JPEG → (프레임 번호, JPEG). 새 프레임이 없으면 (after_seq, None).
+        영상을 보는 사람이 여럿이어도(키오스크 + 관리자) 같은 프레임은 한 번만 인코딩해서 나눠 쓴다.
+        서버는 이 함수를 이벤트 루프 밖(스레드)에서 부른다 — 인코딩하는 동안 화면 전환·버튼 요청이 멈추지 않게.
+        """
+        seq = self.frame_seq
+        if seq == after_seq:
+            return after_seq, None
+        with self._jpeg_lock:
+            if self._jpeg_cache[0] != seq:
+                self._jpeg_cache = (seq, self.jpeg_frame())
+            return self._jpeg_cache
+
     def jpeg_frame(self, max_width=960):
         """카메라 화면에 얼굴 상자와 이름을 그려 JPEG로 만든다. 카메라가 꺼져 있으면 None."""
+        started = time.time()
+        jpg = self._jpeg_frame(max_width)
+        if jpg is not None:
+            meter.time_ms("jpeg_ms", (time.time() - started) * 1000)
+        return jpg
+
+    def _jpeg_frame(self, max_width):
         frame = self.latest_frame
         if not self.camera_on or frame is None:
             return None

@@ -18,10 +18,25 @@ async function post(url, body) {
   if (resp.ok) render(await resp.json());
 }
 
+// 브라우저에서 생긴 문제를 서버 진단 로그(logs/web.log)에 같이 남긴다
+let unloading = false;
+window.addEventListener("pagehide", () => { unloading = true; });
+function report(message) {
+  if (unloading) return;
+  try {
+    navigator.sendBeacon("/api/log", new Blob([JSON.stringify({ page: "출석화면", message })], { type: "application/json" }));
+  } catch { /* 로그를 못 보내도 화면은 계속 동작한다 */ }
+}
+window.addEventListener("error", (e) => report(`스크립트 오류: ${e.message} (${e.filename}:${e.lineno})`));
+window.addEventListener("unhandledrejection", (e) => report(`처리 안 된 오류: ${e.reason}`));
+
 function connect() {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   ws.onmessage = (e) => render(JSON.parse(e.data));
-  ws.onclose = () => setTimeout(connect, 1000);  // 서버를 다시 켜면 저절로 다시 붙는다
+  ws.onclose = (e) => {
+    report(`웹소켓 끊김 (code ${e.code}) — 1초 뒤 다시 연결`);
+    setTimeout(connect, 1000);  // 서버를 다시 켜면 저절로 다시 붙는다
+  };
 }
 
 document.addEventListener("click", (e) => {
@@ -168,6 +183,8 @@ function tick() {
     $(id).textContent = `${left}초 뒤 처음 화면으로`;
   }
 }
+
+$("video").addEventListener("error", () => { if ($("video").getAttribute("src")) report("카메라 영상 연결이 끊겼습니다"); });
 
 setInterval(tick, 250);
 fetch("/api/state").then((r) => r.json()).then((st) => {

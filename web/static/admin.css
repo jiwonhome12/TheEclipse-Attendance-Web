@@ -219,6 +219,26 @@ table.data tbody tr.selected .tl-label { color: var(--blue-dark); }
 .stepper span { min-width: 56px; text-align: center; font-weight: 800; }
 .file-btn { cursor: pointer; flex-direction: row; font-size: inherit; }
 
+/* ---------- 진단 로그 ---------- */
+.diag-card { grid-column: 1 / -1; }
+.diag-latest { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.diag-latest > div { background: var(--panel-alt); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; }
+.diag-latest > div small { color: var(--text-sub); font-size: 12px; }
+.diag-latest > div.bad { background: #FBE2DF; color: var(--err); }
+.diag-tail {
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: #1B1F27;
+  color: #D7DCE4;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 /* ---------- 사진 / 알림 ---------- */
 dialog { border: none; border-radius: var(--radius); padding: 24px; text-align: center; }
 dialog::backdrop { background: rgba(17, 27, 48, 0.55); }

@@ -453,8 +453,26 @@ function connectState() {
   if (ws) return;
   ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   ws.onmessage = (e) => renderRegisterState(JSON.parse(e.data));
-  ws.onclose = () => { ws = null; if (currentTab === "register") setTimeout(connectState, 1000); };
+  ws.onclose = (e) => {
+    ws = null;
+    if (currentTab === "register") { report(`웹소켓 끊김 (code ${e.code}) — 1초 뒤 다시 연결`); setTimeout(connectState, 1000); }
+  };
 }
+
+// 브라우저에서 생긴 문제를 서버 진단 로그(logs/web.log)에 같이 남긴다
+let unloading = false;
+window.addEventListener("pagehide", () => { unloading = true; });
+function report(message) {
+  if (unloading) return;
+  try {
+    navigator.sendBeacon("/api/log", new Blob([JSON.stringify({ page: "관리자", message })], { type: "application/json" }));
+  } catch { /* 로그를 못 보내도 화면은 계속 동작한다 */ }
+}
+window.addEventListener("error", (e) => report(`스크립트 오류: ${e.message} (${e.filename}:${e.lineno})`));
+window.addEventListener("unhandledrejection", (e) => report(`처리 안 된 오류: ${e.reason}`));
+$("register-video").addEventListener("error", () => {
+  if ($("register-video").getAttribute("src")) report("학생 등록 카메라 영상 연결이 끊겼습니다");
+});
 
 function renderRegisterState(st) {
   let card = st.card || {};
@@ -658,7 +676,26 @@ async function loadSettings() {
   $("key-email").style.color = settings.key_email ? "" : "var(--err)";
   $("form-url").value = settings.google_form_url;
   await loadMailSettings();
+  await loadDiagnostics();
 }
+
+// ---------- 진단 로그 ----------
+async function loadDiagnostics() {
+  const res = await api("/diagnostics?lines=120");
+  const s = res.latest;
+  const ms = (x) => (x ? `${x.avg}ms (최대 ${x.max})` : "-");
+  const item = (label, value, bad) => `<div class="${bad ? "bad" : ""}"><small>${label}</small><b>${value}</b></div>`;
+  $("diag-latest").innerHTML = s && s.at ? [
+    item("기록 시각", s.at),
+    item("카메라", s.camera_on ? `${s.camera_fps}fps` : "꺼짐", s.camera_on && s.camera_fps < 8),
+    item("인식", `${s.ai_fps}fps · ${ms(s.ai_ms)}`, s.ai !== "ready"),
+    item("영상 보냄", `${s.stream_fps}fps · ${s.stream_kb}KB/s`),
+    item("서버 멈춤", ms(s.loop_lag_ms), s.loop_lag_ms && s.loop_lag_ms.max > 300),
+  ].join("") : '<small class="muted">카메라가 켜지면 10초마다 수치가 기록됩니다.</small>';
+  $("diag-tail").textContent = res.tail || "(아직 로그가 없습니다)";
+  $("diag-tail").scrollTop = $("diag-tail").scrollHeight;
+}
+$("btn-diag-refresh").addEventListener("click", guarded(loadDiagnostics));
 
 async function loadMailSettings() {
   const mail = await api("/mail");

@@ -400,6 +400,23 @@ def set_form_url(req: FormUrlRequest, _admin=Depends(require_admin)):
     return {}
 
 
+@router.get("/diagnostics")
+def diagnostics(lines: int = 200, _admin=Depends(require_admin)):
+    """진단 — 마지막 10초 요약 수치와 로그 끝부분."""
+    import diag
+    return {"latest": diag.latest, "tail": diag.tail(min(max(lines, 20), 2000)), "path": diag.LOG_PATH}
+
+
+@router.get("/diagnostics/log")
+def diagnostics_log(_admin=Depends(require_admin)):
+    """로그 파일 내려받기 (문제를 알릴 때 이 파일을 보내면 된다)."""
+    import diag
+    if not os.path.isfile(diag.LOG_PATH):
+        raise HTTPException(404, "아직 로그가 없습니다.")
+    return FileResponse(diag.LOG_PATH, media_type="text/plain; charset=utf-8",
+                        filename=f"web-log_{datetime.now():%Y%m%d_%H%M%S}.txt")
+
+
 class KeyRequest(BaseModel):
     content: str  # 브라우저에서 고른 JSON 키 파일의 내용
 
