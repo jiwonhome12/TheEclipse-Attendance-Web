@@ -33,7 +33,33 @@ function Get-PythonExe {
 Write-Host "=== 창의공간 출석체크 웹 서버 ===" -ForegroundColor Green
 Write-Host "프로그램 폴더: $AppDir"
 
-# ---------- 이미 켜져 있으면 브라우저만 연다 ----------
+# ---------- GitHub에서 최신 코드 받기 ----------
+# 다른 PC에서 고쳐 올린 것도 실행할 때마다 자동으로 반영된다 (학생 DB·사진·설정은 git에 없어서 그대로 남는다).
+# 인터넷이 없거나 이 PC에서 고친 파일이 있어서 못 받으면 지금 있는 코드로 그냥 켠다.
+$Updated = $false
+$Git = Get-Command git -ErrorAction SilentlyContinue
+if ($Git -and (Test-Path (Join-Path $AppDir ".git"))) {
+    Write-Host "GitHub에서 최신 코드를 확인하는 중..."
+    $before = (git -C $AppDir rev-parse HEAD 2>$null)
+    $out = git -C $AppDir pull --ff-only 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $after = (git -C $AppDir rev-parse HEAD 2>$null)
+        if ($before -ne $after) {
+            $Updated = $true
+            Write-Host "최신 코드를 받았습니다:" -ForegroundColor Green
+            git -C $AppDir log --oneline "$before..$after"
+        } else {
+            Write-Host "이미 최신 코드입니다."
+        }
+    } else {
+        Write-Host "최신 코드를 받지 못해 지금 코드로 실행합니다. (인터넷 연결 또는 이 PC에서 고친 파일 확인)" -ForegroundColor Yellow
+        $out | ForEach-Object { Write-Host "  $_" }
+    }
+} else {
+    Write-Host "git이 없거나 ZIP으로 받은 폴더라 최신 코드 확인은 건너뜁니다."
+}
+
+# ---------- 이미 켜져 있으면 ----------
 $running = Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -match 'server\.py' -or $_.CommandLine -match 'attendance_app\.py' }
 if ($running) {
@@ -42,10 +68,17 @@ if ($running) {
         Write-Host "앱 버전을 먼저 끈 뒤 다시 실행하세요."
         exit 1
     }
-    Write-Host "웹 서버가 이미 켜져 있습니다. 브라우저로 출석 화면을 엽니다."
-    Start-Process $Url
+    if (-not $Updated) {
+        # 코드가 그대로면 켜진 서버를 그대로 쓴다
+        Write-Host "웹 서버가 이미 켜져 있습니다. 브라우저로 출석 화면을 엽니다."
+        Start-Process $Url
+        Start-Sleep -Seconds 2
+        exit 0
+    }
+    # 새 코드를 받았으면 예전 코드로 돌고 있는 서버를 끄고 새로 켠다 (안 그러면 고친 내용이 안 보인다)
+    Write-Host "예전 코드로 켜진 웹 서버를 끄고 새 코드로 다시 켭니다." -ForegroundColor Cyan
+    $running | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Seconds 2
-    exit 0
 }
 
 # ---------- 파이썬 ----------
